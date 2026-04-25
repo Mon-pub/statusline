@@ -36,16 +36,23 @@ This is a three-file bash tool. Read the scripts before installing — they are 
 git clone https://github.com/<you>/claude-statusline.git
 cd claude-statusline
 ./install.sh          # copies bin/*.sh into $CLAUDE_CONFIG_DIR (default ~/.claude)
+                      # AND merges the statusLine entry into settings.json
 ```
 
-Or manually:
+Flags:
+- `--no-write` — copy scripts only, print the settings.json snippet instead of editing
+- `--force`    — overwrite an existing different `statusLine` value without prompting
+
+If `settings.json` does not exist it is created. If it already contains a matching `statusLine` the second run is a no-op. Existing values for other keys are preserved (`jq` merge, atomic write, `.bak` backup).
+
+Manual install:
 
 ```bash
 cp bin/statusline-command.sh bin/credit-lib.sh bin/credit-project.sh ~/.claude/
 chmod +x ~/.claude/statusline-command.sh ~/.claude/credit-project.sh
 ```
 
-Then wire it into Claude Code by adding to `~/.claude/settings.json`:
+Then add to `~/.claude/settings.json`:
 
 ```json
 {
