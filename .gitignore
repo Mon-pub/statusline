@@ -11,3 +11,8 @@ Thumbs.db
 # Local dev
 *.log
 *.cache
+node/logs/
+*.bak
+
+# Runtime backup artifacts (created per-project by backup system)
+.claude/backups/
