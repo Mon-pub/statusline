@@ -335,18 +335,29 @@ function formatDateTag(d) {
 function writeBackup(markdown, existingPath) {
   mkdirSync(BACKUP_DIR, { recursive: true });
 
-  // Overwrite existing backup for this session if it exists
+  const tag = formatDateTag(new Date());
+
+  // Update existing backup for this session: rewrite content and rename the
+  // file to a fresh date tag (keeping its number) so the displayed filename
+  // reflects the latest update, not the session-start date.
   if (existingPath) {
-    const full = join(PROJECT_ROOT, existingPath);
-    if (existsSync(full)) {
-      writeFileSync(full, markdown);
-      appendLog(`Backup updated: ${existingPath}`);
-      return existingPath;
+    const oldFull = join(PROJECT_ROOT, existingPath);
+    if (existsSync(oldFull)) {
+      const num = parseInt(existingPath.match(/(\d+)-backup-/)?.[1] || "0", 10) || nextBackupNumber();
+      const newName = `${num}-backup-${tag}.md`;
+      const newFull = join(BACKUP_DIR, newName);
+      const newRel = `.claude/backups/${newName}`;
+
+      writeFileSync(newFull, markdown);
+      if (newFull !== oldFull) {
+        try { unlinkSync(oldFull); } catch { /* ignore */ }
+      }
+      appendLog(`Backup updated: ${newRel}`);
+      return newRel;
     }
   }
 
   const num = nextBackupNumber();
-  const tag = formatDateTag(new Date());
   const name = `${num}-backup-${tag}.md`;
   const fullPath = join(BACKUP_DIR, name);
   const rel = `.claude/backups/${name}`;
