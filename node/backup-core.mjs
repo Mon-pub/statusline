@@ -45,7 +45,7 @@ const CONTINUOUS_PCT = 5;
 export function appendLog(msg) {
   try {
     const dir = dirname(LOG_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const ts = new Date().toISOString();
     const entry = `[${ts}] ${msg}`;
     let lines = [];
@@ -53,7 +53,7 @@ export function appendLog(msg) {
       lines = readFileSync(LOG_PATH, "utf-8").split("\n").filter(Boolean).slice(-99);
     }
     lines.push(entry);
-    writeFileSync(LOG_PATH, lines.join("\n") + "\n");
+    writeFileSync(LOG_PATH, lines.join("\n") + "\n", { mode: 0o600 });
   } catch { /* silent */ }
 }
 
@@ -63,7 +63,7 @@ export function appendLog(msg) {
 
 function safeWrite(path, data) {
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, data);
+  writeFileSync(tmp, data, { mode: 0o600 });
   try {
     renameSync(tmp, path);
   } catch (e) {
@@ -96,7 +96,7 @@ export function loadState(sessionId) {
 
 export function saveState(sessionId, state) {
   try {
-    mkdirSync(BACKUP_DIR, { recursive: true });
+    mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
     safeWrite(stateFile(sessionId), JSON.stringify(state, null, 2));
   } catch { /* silent */ }
 }
@@ -128,7 +128,7 @@ function sweepOldFiles(currentSessionId) {
 function acquireLock(sessionId) {
   const lf = lockFile(sessionId);
   try {
-    mkdirSync(BACKUP_DIR, { recursive: true });
+    mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
     if (existsSync(lf)) {
       const age = Date.now() - statSync(lf).mtimeMs;
       if (age < LOCK_TTL_MS) return false;
@@ -333,7 +333,9 @@ function formatDateTag(d) {
 }
 
 function writeBackup(markdown, existingPath) {
-  mkdirSync(BACKUP_DIR, { recursive: true });
+  // Backups hold verbatim conversation content (user prompts, file paths) and
+  // may contain secrets pasted into chat — keep dir 0700 and files 0600.
+  mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
 
   const tag = formatDateTag(new Date());
 
@@ -348,7 +350,7 @@ function writeBackup(markdown, existingPath) {
       const newFull = join(BACKUP_DIR, newName);
       const newRel = `.claude/backups/${newName}`;
 
-      writeFileSync(newFull, markdown);
+      writeFileSync(newFull, markdown, { mode: 0o600 });
       if (newFull !== oldFull) {
         try { unlinkSync(oldFull); } catch { /* ignore */ }
       }
@@ -362,7 +364,7 @@ function writeBackup(markdown, existingPath) {
   const fullPath = join(BACKUP_DIR, name);
   const rel = `.claude/backups/${name}`;
 
-  writeFileSync(fullPath, markdown);
+  writeFileSync(fullPath, markdown, { mode: 0o600 });
   appendLog(`Backup created: ${rel}`);
   return rel;
 }
@@ -449,27 +451,33 @@ export function runBackup(sessionId, trigger, transcriptPath, freePct) {
     return st.backupPath || null;
   }
 
-  const jsonlPath = transcriptPath || findTranscript(sessionId);
-  if (!jsonlPath) {
-    appendLog("No transcript found");
-    return null;
+  // Release the lock as soon as this run finishes so the next backup isn't
+  // blocked for the full TTL; the TTL stays only as a crash safety net.
+  try {
+    const jsonlPath = transcriptPath || findTranscript(sessionId);
+    if (!jsonlPath) {
+      appendLog("No transcript found");
+      return null;
+    }
+
+    const parsed = parseTranscript(jsonlPath);
+    if (!parsed) {
+      appendLog("Transcript parse failed");
+      return null;
+    }
+
+    const md = generateMarkdown(parsed, sessionId, trigger, freePct);
+    const state = loadState(sessionId);
+    const rel = writeBackup(md, state.backupPath);
+
+    state.backupPath = rel;
+    state.prevTokens = state._pendingTokens ?? state.prevTokens;
+    state.prevFreePct = state._pendingFreePct ?? state.prevFreePct;
+    saveState(sessionId, state);
+
+    maybeSpawnCompactor();
+    return rel;
+  } finally {
+    try { unlinkSync(lockFile(sessionId)); } catch { /* TTL is the fallback */ }
   }
-
-  const parsed = parseTranscript(jsonlPath);
-  if (!parsed) {
-    appendLog("Transcript parse failed");
-    return null;
-  }
-
-  const md = generateMarkdown(parsed, sessionId, trigger, freePct);
-  const state = loadState(sessionId);
-  const rel = writeBackup(md, state.backupPath);
-
-  state.backupPath = rel;
-  state.prevTokens = state._pendingTokens ?? state.prevTokens;
-  state.prevFreePct = state._pendingFreePct ?? state.prevFreePct;
-  saveState(sessionId, state);
-
-  maybeSpawnCompactor();
-  return rel;
 }

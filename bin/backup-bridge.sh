@@ -45,12 +45,19 @@ maybe_trigger_backup() {
     [ -z "$session_id" ] || [ "$session_id" = "unknown" ] && return
     [ ! -f "${_NODE_DIR}/trigger-backup.mjs" ] && return
 
+    # SECURITY: sanitize session_id (path component) and coerce numeric inputs to
+    # integers before any arithmetic — the delta file is in a shared cache dir and
+    # its contents must never be evaluated by `$(( ))`.
+    session_id=$(printf '%s' "$session_id" | tr -c 'a-zA-Z0-9-' '_')
+    [[ "$total_tokens" =~ ^[0-9]+$ ]] || total_tokens=0
+
     mkdir -p "$_DELTA_CACHE_DIR" 2>/dev/null
     local delta_file="${_DELTA_CACHE_DIR}/delta-${session_id}.txt"
 
     # Read last known token count
     local last_tokens=0
     [ -f "$delta_file" ] && last_tokens=$(cat "$delta_file" 2>/dev/null)
+    [[ "$last_tokens" =~ ^[0-9]+$ ]] || last_tokens=0
 
     local delta=$(( total_tokens - last_tokens ))
     # Negative delta means session reset / new session

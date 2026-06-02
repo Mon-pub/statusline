@@ -25,7 +25,10 @@ try {
   appendLog(`PreCompact: trigger=${reason} session=${sessionId.slice(0, 8)}…`);
 
   const path = runBackup(sessionId, `precompact-${reason}`, transcript, undefined);
-  console.log(path ? `Backup: ${path}` : "Backup skipped");
+  // Write to stderr, never stdout: on exit 0 a PreCompact hook's stdout is parsed
+  // as an optional {decision:"block"} JSON — keep stdout empty so we can never
+  // accidentally block compaction. (We also appendLog above for the record.)
+  console.error(path ? `Backup: ${path}` : "Backup skipped");
 } catch (e) {
   appendLog(`PreCompact error: ${e.message}`);
 }

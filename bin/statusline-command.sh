@@ -31,6 +31,10 @@ input=$(cat)
 # ============================================================================
 
 model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
+# SECURITY: model name is printed to the terminal; strip C0/C1 control bytes
+# (incl. ESC 0x1b) so a crafted display_name can't perform terminal injection
+# (cursor moves, OSC clipboard writes, hyperlink spoofing).
+model=$(printf '%s' "$model" | tr -d '\000-\037\177')
 
 # Effort level — prefer live stdin (.effort.level, authoritative for mid-session
 # /effort changes), fall back to settings.json for older Claude Code versions.
@@ -39,6 +43,9 @@ if [ -z "$effort" ]; then
     _claude_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
     effort=$(jq -r '.effortLevel // empty' "${_claude_dir}/settings.json" 2>/dev/null)
 fi
+# SECURITY: effort is printed (the label is shown raw for unknown levels); strip
+# C0/C1 control bytes so a crafted effort.level can't inject terminal escapes.
+effort=$(printf '%s' "$effort" | tr -d '\000-\037\177')
 case "$effort" in
     "")     think_label=""        ;;  # absent: hide field
     medium) think_label="med"     ;;  # abbreviate
@@ -50,13 +57,20 @@ esac
 fast_mode=$(echo "$input" | jq -r 'if .fast_mode==null then "unset" else (.fast_mode|tostring) end' 2>/dev/null)
 thinking_enabled=$(echo "$input" | jq -r 'if .thinking.enabled==null then "unset" else (.thinking.enabled|tostring) end' 2>/dev/null)
 
-# Context window — prefer current_usage for precision, fall back to top-level
-window_size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
-input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
-cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-output_tokens=$(echo "$input" | jq -r '.context_window.current_usage.output_tokens // 0')
-used_pct_raw=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+# Context window — prefer current_usage for precision, fall back to top-level.
+# SECURITY: every value that feeds bash arithmetic `$(( ))` below is forced to a
+# real integer at the jq boundary. Without this, a stdin field carrying a JSON
+# string like "a[$(cmd)]" would be evaluated by bash arithmetic as a command
+# substitution (RCE). `if type=="number" then floor else 0 end` guarantees only
+# digits reach `$(( ))`.
+_int() { echo "$input" | jq -r "(${1}) // 0 | if type==\"number\" then floor else 0 end" 2>/dev/null; }
+window_size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000 | if type=="number" and . > 0 then floor else 200000 end' 2>/dev/null)
+input_tokens=$(_int '.context_window.current_usage.input_tokens')
+cache_read=$(_int '.context_window.current_usage.cache_read_input_tokens')
+cache_create=$(_int '.context_window.current_usage.cache_creation_input_tokens')
+output_tokens=$(_int '.context_window.current_usage.output_tokens')
+used_pct_raw=$(echo "$input" | jq -r '.context_window.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+[ -z "$window_size" ] && window_size=200000
 
 current_input=$(( input_tokens + cache_read + cache_create ))
 current_total=$(( current_input + output_tokens ))
@@ -80,21 +94,23 @@ free_pct=$(awk -v f="$free_tokens" -v w="$window_size" 'BEGIN {
 }')
 
 # Rate limits
-five_pct=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty')
-five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at       // empty')
-week_pct=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty')
-week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at       // empty')
+# Numeric-or-empty for all of these; resets_at also flows into `$(( epoch - now ))`.
+five_pct=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
+week_pct=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
 
-sonnet_pct=$(echo "$input" | jq -r '
-    .rate_limits.sonnet.used_percentage          //
-    .rate_limits.models.sonnet.used_percentage   //
-    .rate_limits.sonnet_used_percentage          //
-    .rate_limits.sonnet                          //
-    empty' 2>/dev/null)
+# Sonnet-specific quota: only the documented path. (Earlier speculative field
+# shapes were never present in any released schema.) Numeric-or-empty.
+sonnet_pct=$(echo "$input" | jq -r '.rate_limits.sonnet.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
 
 # Session info
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 session_id=$(echo "$input"      | jq -r '.session_id      // empty')
+# SECURITY: session_id is used to build cache/state/lock file paths; strip every
+# character outside [A-Za-z0-9-] so it can never traverse directories or inject.
+session_id=$(printf '%s' "$session_id" | tr -c 'a-zA-Z0-9-' '_')
+[ "$session_id" = "_" ] && session_id=""
 
 # ============================================================================
 # LINE 1: Model | tokens (% used) | free tokens, % free
@@ -106,6 +122,9 @@ model_display="${C_BLUE}${model}${C_RESET}"
 [ "$fast_mode" = "true" ] && model_display="${model_display} ${C_YELLOW}fast${C_RESET}"
 # thinking: surface only the off state (the effort badge already implies thinking on)
 [ "$thinking_enabled" = "false" ] && model_display="${model_display} ${C_DIM}no-think${C_RESET}"
+# output style: surface only when non-default (control bytes stripped, it is printed)
+out_style=$(echo "$input" | jq -r '.output_style.name // empty' 2>/dev/null | tr -d '\000-\037\177')
+[ -n "$out_style" ] && [ "$out_style" != "default" ] && model_display="${model_display} ${C_DIM}${out_style}${C_RESET}"
 
 used_str=$(format_tokens "$current_input")
 total_str=$(format_tokens "$window_size")
@@ -183,19 +202,26 @@ if [ -n "$week_reset" ] && [ -n "$week_pct" ]; then
     [ -n "$week_reset_str" ] && line3_parts+=("${C_WHITE}resets ${week_reset_str}${C_RESET}")
 fi
 
-# Session cost — native cost.total_cost_usd (authoritative, computed by Claude
-# Code itself) is the headline; the per-side in/out split comes from the
-# transcript JSONL estimate as a dim secondary hint. Falls back to the JSONL
-# total on older CC that lacks the cost field.
+# Session cost. The headline is Claude Code's authoritative cost.total_cost_usd.
+# When it is present (modern CC) we do NOT scan the transcript at all — scanning a
+# multi-hundred-MB JSONL on every ~300ms statusline render would be a DoS on long
+# sessions, and the mtime cache misses every turn while the session is active.
+# The per-side in/out split and per-model breakdown remain available offline via
+# credit-summary.sh / credit-project.sh. Only older Claude Code that lacks the
+# cost field falls back to the (cached) JSONL estimate here.
 native_cost=$(echo "$input" | jq -r 'if (.cost.total_cost_usd|type)=="number" then .cost.total_cost_usd else empty end' 2>/dev/null)
 credit_str=""
-_in=""; _out=""; _tot=""
-if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" ]; then
+if [ -n "$native_cost" ]; then
+    native_fmt=$(printf '%.2f' "$native_cost" 2>/dev/null) || native_fmt=""
+    [ -n "$native_fmt" ] && credit_str="${C_CYAN}\$${native_fmt}${C_RESET}"
+elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" ]; then
+    # Older CC (no cost field): estimate from the transcript JSONL, cached on mtime.
     _cache_base="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
     mkdir -p -m 0700 "$_cache_base" 2>/dev/null
     cache_file="${_cache_base}/credit-${session_id}.cache"
     cur_mtime=$(stat -c '%Y' "$transcript_path" 2>/dev/null \
              || stat -f '%m' "$transcript_path" 2>/dev/null || echo "0")
+    _in=""; _out=""; _tot=""
 
     if [ -f "$cache_file" ]; then
         cached_mtime=$(cut -d' ' -f1 "$cache_file")
@@ -217,33 +243,8 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" 
             _tot=$( printf '%s' "$credit" | cut -f3)
         fi
     fi
-else
-    # Fallback: live cumulative counts (fresh sessions, no transcript yet).
-    # Opus rates ($5/$25 per 1M) — kept in sync with set_rates() in credit-lib.sh.
-    total_in=$(echo "$input" | jq -r '.context_window.total_input_tokens  // 0')
-    total_out=$(echo "$input"| jq -r '.context_window.total_output_tokens // 0')
-    total_tokens=$(( total_in + total_out ))
-    if [ "$total_tokens" -gt 0 ]; then
-        read -r _in _out _tot < <(awk -v ti="$total_in" -v to="$total_out" \
-            'BEGIN {
-                in_c  = ti * 5.00 / 1000000
-                out_c = to * 25.00 / 1000000
-                printf "%.4f\t%.4f\t%.4f", in_c, out_c, in_c+out_c
-            }')
-    fi
-fi
 
-# Assemble: native total is primary (authoritative to the cent), JSONL in/out
-# split is the secondary dim hint; fall back to the JSONL total on older CC.
-if [ -n "$native_cost" ]; then
-    native_fmt=$(printf '%.2f' "$native_cost")
-    if [ -n "$_in" ] && [ -n "$_out" ]; then
-        credit_str="${C_CYAN}\$${native_fmt}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
-    else
-        credit_str="${C_CYAN}\$${native_fmt}${C_RESET}"
-    fi
-elif [ -n "$_tot" ]; then
-    credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
+    [ -n "$_tot" ] && credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
 fi
 
 [ -n "$credit_str" ] && line3_parts+=("$credit_str")

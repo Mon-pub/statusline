@@ -30,8 +30,12 @@ C_SEP=" ${C_DIM}|${C_RESET} "
 # ---------------------------------------------------------------------------
 build_bar() {
     local pct="$1" width="${2:-16}"
-    [ "$pct" -lt 0 ] 2>/dev/null && pct=0
-    [ "$pct" -gt 100 ] 2>/dev/null && pct=100
+    # Self-guard: both args feed raw bash arithmetic below; coerce to integers so
+    # build_bar can never evaluate an attacker string regardless of the caller.
+    [[ "$pct" =~ ^-?[0-9]+$ ]] || pct=0
+    [[ "$width" =~ ^[0-9]+$ ]] || width=16
+    [ "$pct" -lt 0 ] && pct=0
+    [ "$pct" -gt 100 ] && pct=100
 
     local filled=$(( pct * width / 100 ))
     local empty=$(( width - filled ))
@@ -87,6 +91,9 @@ format_tokens() {
 fmt_reset_friendly() {
     local epoch="$1" style="$2"
     [ -z "$epoch" ] && return
+    # Defense in depth: epoch reaches `$(( epoch - now ))` below; reject anything
+    # that is not a plain non-negative integer so it can never be evaluated.
+    case "$epoch" in (*[!0-9]*|'') return ;; esac
 
     case "$style" in
         time)

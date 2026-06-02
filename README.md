@@ -159,15 +159,7 @@ Edit `set_rates()` in `bin/credit-lib.sh` to update pricing.
 
 **Bash display layer** handles all output formatting. Reads stdin JSON from Claude Code, computes everything locally, outputs ANSI-colored lines. Zero network calls, fast.
 
-**Node.js backup layer** handles JSONL transcript parsing and backup creation. Called in the background by the bash statusline (via `backup-bridge.sh`) and by the PreCompact hook (via `conv-backup.mjs`). Only modification from upstream v5.3: `STATUSLINE_PROJECT_DIR` env var for project path (2-line change in `backup-core.mjs` and `backup-compactor.mjs`).
-
-## Upgrading from v5.3
-
-The Node backup files are nearly identical to the v5.3 source at `.claude/hooks/ContextRecoveryHook/`. To upgrade:
-
-1. Diff new v5.3 files against current `node/` directory
-2. Apply patches
-3. Re-add the `STATUSLINE_PROJECT_DIR` env var (grep for it — it's 2 lines)
+**Node.js backup layer** handles JSONL transcript parsing and backup creation. Called in the background by the bash statusline (via `backup-bridge.sh`) and by the PreCompact hook (via `conv-backup.mjs`). The optional **backup compaction** step (`backup-compactor.mjs`) summarizes backups older than 14 days by invoking the `claude` CLI.
 
 ## Configuration
 
@@ -180,7 +172,11 @@ Environment variables:
 
 ## Privacy
 
-All scripts read only local files. The backup system parses your existing transcript JSONL (already on disk). No network calls. No telemetry.
+The **statusline display** and **backup capture** read only local files (the stdin JSON Claude Code provides and your existing transcript JSONL) and make **no network calls and send no telemetry**.
+
+One optional component does leave the machine: the **backup compactor** (`backup-compactor.mjs`) sends summaries of your own backups that are older than 14 days to the Anthropic API via the `claude` CLI, so they can be condensed. If you require strict no-egress, disable it by removing `node/backup-compactor.mjs` (or the `maybeSpawnCompactor()` call in `backup-core.mjs`). Backup files are written to your project's `.claude/backups/` with `0600` permissions and contain verbatim conversation content — treat them as sensitive and keep them gitignored.
+
+See [SECURITY.md](SECURITY.md) for the full trust model and how to report issues.
 
 ## License
 

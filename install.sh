@@ -62,7 +62,8 @@ for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh
         echo "  skip $f (not found in bin/)"
         continue
     fi
-    if [ -e "$dst" ]; then
+    # Keep the FIRST (pristine) backup; never clobber it on repeated installs.
+    if [ -e "$dst" ] && [ ! -e "${dst}.bak" ]; then
         cp -v "$dst" "${dst}.bak"
     fi
     cp -v "$src" "$dst"
@@ -80,7 +81,7 @@ for f in backup-core.mjs backup-compactor.mjs conv-backup.mjs trigger-backup.mjs
         echo "  skip $f (not found in node/)"
         continue
     fi
-    if [ -e "$dst" ]; then
+    if [ -e "$dst" ] && [ ! -e "${dst}.bak" ]; then
         cp -v "$dst" "${dst}.bak"
     fi
     cp -v "$src" "$dst"
@@ -128,6 +129,7 @@ fi
 if [ ! -s "$SETTINGS" ]; then
     echo "Creating $SETTINGS"
     echo '{}' > "$SETTINGS"
+    chmod 600 "$SETTINGS"
 fi
 
 # Validate it parses
@@ -138,8 +140,27 @@ if ! jq -e . "$SETTINGS" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Backup settings
-cp -v "$SETTINGS" "${SETTINGS}.bak"
+# Keep only the FIRST pristine backup; don't clobber it on repeated installs.
+if [ ! -e "${SETTINGS}.bak" ]; then
+    cp -v "$SETTINGS" "${SETTINGS}.bak"
+fi
+
+# atomic_jq '<filter>' [jq args...] — apply a jq transform to settings.json
+# atomically: write to a temp file, verify it still parses, rename into place,
+# and re-assert 0600. The temp file is removed on any failure or signal, so a
+# broken transform or an interrupt never leaves an orphan or a corrupt file.
+atomic_jq() {
+    local tmp
+    tmp=$(mktemp "${SETTINGS}.XXXXXX") || return 1
+    trap 'rm -f "$tmp"' RETURN
+    if jq "$@" "$SETTINGS" > "$tmp" && jq -e . "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$SETTINGS"
+        chmod 600 "$SETTINGS"
+        return 0
+    fi
+    echo "Error: settings.json transform failed; left unchanged." >&2
+    return 1
+}
 
 # --- Merge statusLine ---
 echo ""
@@ -161,42 +182,32 @@ if [ -n "$EXISTING" ]; then
             esac
         fi
         if [ -n "$DESIRED_JSON" ]; then
-            tmp=$(mktemp "${SETTINGS}.XXXXXX")
-            jq --argjson sl "$DESIRED_JSON" '.statusLine = $sl' "$SETTINGS" > "$tmp"
-            mv "$tmp" "$SETTINGS"
-            echo "statusLine updated."
+            atomic_jq --argjson sl "$DESIRED_JSON" '.statusLine = $sl' && echo "statusLine updated."
         fi
     fi
 else
-    tmp=$(mktemp "${SETTINGS}.XXXXXX")
-    jq --argjson sl "$DESIRED_JSON" '.statusLine = $sl' "$SETTINGS" > "$tmp"
-    mv "$tmp" "$SETTINGS"
-    echo "statusLine added."
+    atomic_jq --argjson sl "$DESIRED_JSON" '.statusLine = $sl' && echo "statusLine added."
 fi
 
-# --- Merge PreCompact hook ---
+# --- Merge PreCompact hook (idempotent rewrite) ---
 if [ "$INSTALL_HOOKS" -eq 1 ]; then
     echo ""
     echo "=== PreCompact hook ==="
     HOOK_CMD="STATUSLINE_PROJECT_DIR=\"\$CLAUDE_PROJECT_DIR\" node ${NODE_TARGET}/conv-backup.mjs"
+    HOOK_JSON=$(jq -nc --arg cmd "$HOOK_CMD" '[{hooks:[{type:"command", command:$cmd, async:true}]}]')
 
-    # Check if PreCompact hook already exists with our command
-    existing_hook=$(jq -r '.hooks.PreCompact // empty | .[] | .hooks[]? | .command // empty' "$SETTINGS" 2>/dev/null | grep -F "conv-backup.mjs" || true)
-
-    if [ -n "$existing_hook" ]; then
-        echo "PreCompact hook already configured. No change."
-    else
-        # Build the hook entry as JSON
-        HOOK_JSON=$(jq -nc --arg cmd "$HOOK_CMD" '[{hooks:[{type:"command", command:$cmd, async:true}]}]')
-
-        # Merge: append to existing PreCompact array or create it
-        tmp=$(mktemp "${SETTINGS}.XXXXXX")
-        jq --argjson hk "$HOOK_JSON" '
-            .hooks //= {} |
-            .hooks.PreCompact = (.hooks.PreCompact // []) + $hk
-        ' "$SETTINGS" > "$tmp"
-        mv "$tmp" "$SETTINGS"
-        echo "PreCompact hook added."
+    # Drop any prior PreCompact entry referencing conv-backup.mjs (so a changed
+    # install path — which CC dedups by exact string and would NOT collapse —
+    # can't leave a duplicate), tolerate a non-array .hooks.PreCompact, then
+    # append the single canonical entry. One atomic pass.
+    if atomic_jq --argjson hk "$HOOK_JSON" '
+        .hooks //= {} |
+        .hooks.PreCompact = (
+            ((.hooks.PreCompact // []) | if type == "array" then . else [] end)
+            | map(select(((.hooks // []) | map(.command // "") | any(test("conv-backup\\.mjs"))) | not))
+        ) + $hk
+    '; then
+        echo "PreCompact hook installed (idempotent)."
     fi
 fi
 

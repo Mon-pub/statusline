@@ -112,6 +112,13 @@ function extractField(content, label) {
   return m ? m[1].trim() : "unknown";
 }
 
+// Session ids are UUIDs. Reject anything that isn't [A-Za-z0-9-] before it is
+// interpolated into a copy-pasteable `claude --resume <sid>` command or a prompt,
+// so a tampered backup file can't inject shell/markdown via the id.
+function safeSessionId(sid) {
+  return /^[A-Za-z0-9-]{1,64}$/.test(sid) ? sid : "(invalid)";
+}
+
 function trimContent(content) {
   // Keep structure but cap long sections
   const lines = content.split("\n");
@@ -150,7 +157,7 @@ function buildPrompt(batch, contents) {
 
   for (let i = 0; i < batch.length; i++) {
     const num = backupNum(batch[i]);
-    const sid = extractField(contents[i], "Session");
+    const sid = safeSessionId(extractField(contents[i], "Session"));
     const trimmed = trimContent(contents[i]);
     prompt += `=== Backup #${num} | Session: ${sid} ===\n${trimmed}\n\n`;
   }
@@ -198,7 +205,7 @@ function buildSummaryFile(batch, contents, summaryText) {
   out += "|---|-----------|------|--------|\n";
   for (let i = 0; i < batch.length; i++) {
     const num = backupNum(batch[i]);
-    const sid = extractField(contents[i], "Session");
+    const sid = safeSessionId(extractField(contents[i], "Session"));
     const d = backupDate(batch[i]);
     out += `| ${num} | ${sid} | ${fmtDate(d)} | \`claude --resume ${sid}\` |\n`;
   }

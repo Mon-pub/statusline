@@ -69,6 +69,8 @@ _jsonl_to_tsv() {
                 (.value.usage.cache_read_input_tokens     // 0 | tostring),
                 (.value.usage.cache_creation_input_tokens // 0 | tostring),
                 (.value.usage.output_tokens               // 0 | tostring),
+                (.value.usage.cache_creation.ephemeral_1h_input_tokens // 0 | tostring),
+                (.value.usage.cache_creation.ephemeral_5m_input_tokens // 0 | tostring),
                 (.value.model // "")
               ]
             | @tsv' 2>/dev/null
@@ -85,9 +87,13 @@ _jsonl_to_tsv() {
 #   model IDs correctly.
 #
 # set_rates(family):
-#   Populates ri/rr/rc/ro with per-1M-token rates for the family.
+#   Populates ri/rr/rc/rc1h/ro with per-1M-token rates for the family.
 #   Known families: opus, sonnet, haiku.
 #   Unknown families: Opus rates (user preference for unknown/pre-release work).
+#   Cache-write tiers (Anthropic): 5-minute TTL = 1.25x base input (rc),
+#   1-hour TTL = 2x base input (rc1h). The JSONL carries them split under
+#   usage.cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens; older
+#   transcripts only have the merged usage.cache_creation_input_tokens.
 # ---------------------------------------------------------------------------
 _AWK_RATE_FN='
     function extract_family(m,    s, n, parts, i, tok) {
@@ -107,18 +113,26 @@ _AWK_RATE_FN='
 
     function set_rates(family) {
         if (family == "haiku") {
-            ri=1.00;  rr=0.10;  rc=1.25;  ro=5.00
+            ri=1.00;  rr=0.10;  rc=1.25;  rc1h=2.50;  ro=5.00
         } else if (family == "sonnet") {
-            ri=3.00;  rr=0.30;  rc=3.75;  ro=15.00
+            ri=3.00;  rr=0.30;  rc=3.75;  rc1h=7.50;  ro=15.00
         } else if (family == "opus") {
-            # Claude Opus 4.7: $5/M in, $25/M out (confirmed 2026-04-22).
-            # Cache: read=0.10×in=$0.50, create=1.25×in=$6.25 (Anthropic standard multipliers).
-            ri=5.00;  rr=0.50;  rc=6.25;  ro=25.00
+            # Claude Opus 4.x: $5/M in, $25/M out. Cache read=0.10x=$0.50,
+            # 5m write=1.25x=$6.25, 1h write=2.00x=$10.00 (Anthropic multipliers).
+            ri=5.00;  rr=0.50;  rc=6.25;  rc1h=10.00;  ro=25.00
         } else {
             # Unknown/future family: default to Opus rates (user preference).
             # The bucket label will be the real family name, not "opus".
-            ri=5.00;  rr=0.50;  rc=6.25;  ro=25.00
+            ri=5.00;  rr=0.50;  rc=6.25;  rc1h=10.00;  ro=25.00
         }
+    }
+
+    # Cache-creation cost: when the JSONL splits the write into 1h/5m tiers
+    # (cc1h+cc5m>0) price each at its own rate; otherwise fall back to the
+    # merged cache_creation_input_tokens at the 5-minute rate.
+    function cache_create_cost(cc, cc1h, cc5m) {
+        if (cc1h + cc5m > 0) return cc1h*rc1h + cc5m*rc
+        return cc*rc
     }
 '
 
@@ -136,10 +150,11 @@ compute_credit_for_jsonl() {
             BEGIN { in_cost = 0; out_cost = 0 }
             {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
-              family = extract_family($5)
+              cc1h = $5+0; cc5m = $6+0
+              family = extract_family($7)
               set_rates(family)
-              in_cost  += (ti*ri + cr*rr + cc*rc) / 1000000
-              out_cost += (to*ro)                 / 1000000
+              in_cost  += (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
+              out_cost += (to*ro)                                           / 1000000
             }
             END {
               total = in_cost + out_cost
@@ -162,10 +177,11 @@ emit_credit_rows_for_jsonl() {
         | awk "$_AWK_RATE_FN"'
             {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
-              family = extract_family($5)
+              cc1h = $5+0; cc5m = $6+0
+              family = extract_family($7)
               set_rates(family)
-              in_c  = (ti*ri + cr*rr + cc*rc) / 1000000
-              out_c = (to*ro)                 / 1000000
+              in_c  = (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
+              out_c = (to*ro)                                           / 1000000
               if (in_c + out_c == 0) next
               printf "%s\t%.4f\t%.4f\n", family, in_c, out_c
             }'
