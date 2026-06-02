@@ -3,23 +3,25 @@
 A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/claude-code) with ANSI colors, rate limit bars, session cost tracking, peak/off-peak indicator, and automatic context backup.
 
 ```
-Claude Opus 4.7 (max) | 50k/200k (25% used) | 117k 42% free
-5h: ●●●●●○○○○○ 43% | 7d: ●●○○○○○○○○ 22% | ctx: ●●●●○○○○○○○○○○○○ | Off-peak (4h12m)
-resets 5:00pm (3h16m) | resets Thu, 7:00pm | $1.2473 (in:$0.31 out:$0.94)
--> .claude/backups/3-backup-18th-May-2026-2-30pm.md
+Opus 4.8 (1M context) (xhigh) | 219k/1m (22% used) | 748k 74% free
+5h: ●○○○○○○○○○ 5% | 7d: ●○○○○○○○○○ 10% | ctx: ●●●○○○○○○○○○○○○○ | Off-peak (4h12m)
+resets 6:00pm (3h1m) | resets Mon, 8:00am | $19.34 (in:$18.05 out:$2.27) | +1739/-223
+-> .claude/backups/3-backup-2026-06-02-1459.md
 ```
 
 ## Features
 
 ### Display (bash)
 - **ANSI-colored multi-line output** — 3 lines (4 when a backup exists), colored with RGB escape sequences.
-- **Model name + thinking level** badge (`low`/`med`/`high`/`xhigh`/`max`) from `settings.json`.
-- **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+).
+- **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. Falls back to `settings.json` on older Claude Code.
+- **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean.
+- **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly.
 - **Free tokens until compact** — subtracts the 33k autocompact buffer to show real usable space.
 - **Rate limit bars** — 5-hour and 7-day windows with colored progress bars. Sonnet-specific quota when available.
-- **Friendly reset times** — `5:00pm (3h16m)` for current window, `Thu, 7:00pm` for weekly, `feb 1` for monthly.
+- **Friendly reset times** — `5:00pm (3h16m)` for current window, `Mon, 8:00am` for weekly, `feb 1` for monthly.
 - **Peak/off-peak indicator** — weekdays 8AM-2PM ET are peak hours. Shows countdown to next transition.
-- **Live session cost** — reads the transcript JSONL directly (survives `/resume`). Per-model pricing for Opus/Sonnet/Haiku with correct cache-read and cache-create billing.
+- **Session cost** — headline uses Claude Code's authoritative `cost.total_cost_usd` when present (the transcript-JSONL estimate supplies the dim `in/out` split). Falls back to the per-model JSONL estimate on older Claude Code. Survives `/resume`.
+- **Lines changed** — `+added/-removed` diff stat for the session, from `cost.total_lines_*`.
 
 ### Backup system (Node.js)
 - **Auto backup on thresholds** — first backup at 50k tokens, then every 10k. Percentage thresholds at 30%, 15%, 5% free as safety net.

@@ -16,3 +16,6 @@ node/logs/
 
 # Runtime backup artifacts (created per-project by backup system)
 .claude/backups/
+
+# Local probe sample (not for commit)
+.sample-stdin.json

@@ -3,10 +3,16 @@
 # layout, rate limit bars, session cost, peak/off-peak, and backup integration.
 #
 # Output (3-4 lines):
-#   Line 1: Model (think) | 50k/200k (25% used) | 117k 42% free
-#   Line 2: 5h: ●●●●○○○○ 43% | 7d: ●●○○○○○○ 22% | sonnet:15% | Off-peak (4h12m)
-#   Line 3: resets 5:00pm (3h16m) | resets Thu, 7:00pm | $1.2473 (in:$0.31 out:$0.94)
-#   Line 4: (conditional) -> .claude/backups/3-backup-18th-May-2026.md
+#   Line 1: Model (effort) [fast] [no-think] | 219k/1m (22% used) | 748k 74% free
+#   Line 2: 5h: ●●●●○○○○ 43% | 7d: ●●○○○○○○ 22% | ctx: ●●●○… | Off-peak (4h12m)
+#   Line 3: resets 5:00pm (3h16m) | resets Mon, 8:00am | $19.34 (in:$.. out:$..) | +1739/-223
+#   Line 4: (conditional) -> .claude/backups/3-backup-2026-06-02.md
+#
+# Effort is read from the live stdin (.effort.level, authoritative for mid-session
+# /effort changes) and falls back to settings.json on older Claude Code. The
+# 'fast' and 'no-think' badges appear only in their non-default states. The cost
+# headline uses the native .cost.total_cost_usd when present (the JSONL estimate
+# supplies the dim in/out split); +added/-removed comes from .cost.total_lines_*.
 #
 # Configuration in settings.json:
 #   { "statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" } }
@@ -26,17 +32,23 @@ input=$(cat)
 
 model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
 
-# Thinking level from settings.json
-_claude_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
-effort=$(jq -r '.effortLevel // empty' "${_claude_dir}/settings.json" 2>/dev/null)
+# Effort level — prefer live stdin (.effort.level, authoritative for mid-session
+# /effort changes), fall back to settings.json for older Claude Code versions.
+effort=$(echo "$input" | jq -r '.effort.level // empty' 2>/dev/null)
+if [ -z "$effort" ]; then
+    _claude_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+    effort=$(jq -r '.effortLevel // empty' "${_claude_dir}/settings.json" 2>/dev/null)
+fi
 case "$effort" in
-    low)    think_label="low"   ;;
-    medium) think_label="med"   ;;
-    high)   think_label="high"  ;;
-    xhigh)  think_label="xhigh" ;;
-    max)    think_label="max"   ;;
-    *)      think_label=""      ;;
+    "")     think_label=""        ;;  # absent: hide field
+    medium) think_label="med"     ;;  # abbreviate
+    *)      think_label="$effort" ;;  # low/high/xhigh/max + any new level shown raw
 esac
+
+# Fast mode / thinking state — booleans need an explicit null test (a plain
+# `// empty` would swallow a real `false`). Yields: true / false / unset.
+fast_mode=$(echo "$input" | jq -r 'if .fast_mode==null then "unset" else (.fast_mode|tostring) end' 2>/dev/null)
+thinking_enabled=$(echo "$input" | jq -r 'if .thinking.enabled==null then "unset" else (.thinking.enabled|tostring) end' 2>/dev/null)
 
 # Context window — prefer current_usage for precision, fall back to top-level
 window_size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
@@ -49,11 +61,12 @@ used_pct_raw=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 current_input=$(( input_tokens + cache_read + cache_create ))
 current_total=$(( current_input + output_tokens ))
 
-# Percentage used (prefer manual calculation when token counts available)
-if [ "$current_total" -gt 0 ] 2>/dev/null; then
-    pct_used=$(awk -v t="$current_input" -v w="$window_size" 'BEGIN { printf "%d", (t/w)*100 }')
-elif [ -n "$used_pct_raw" ]; then
+# Percentage used — prefer stdin's own used_percentage (matches Claude Code's UI
+# exactly), fall back to manual calc from token counts for older CC.
+if [ -n "$used_pct_raw" ]; then
     pct_used=$(printf '%.0f' "$used_pct_raw")
+elif [ "$current_total" -gt 0 ] 2>/dev/null; then
+    pct_used=$(awk -v t="$current_input" -v w="$window_size" 'BEGIN { printf "%d", (t/w)*100 }')
 else
     pct_used=0
 fi
@@ -87,11 +100,12 @@ session_id=$(echo "$input"      | jq -r '.session_id      // empty')
 # LINE 1: Model | tokens (% used) | free tokens, % free
 # ============================================================================
 
-if [ -n "$think_label" ]; then
-    model_display="${C_BLUE}${model}${C_RESET} ${C_DIM}(${think_label})${C_RESET}"
-else
-    model_display="${C_BLUE}${model}${C_RESET}"
-fi
+model_display="${C_BLUE}${model}${C_RESET}"
+[ -n "$think_label" ] && model_display="${model_display} ${C_DIM}(${think_label})${C_RESET}"
+# fast mode: surface only the non-default (true) state
+[ "$fast_mode" = "true" ] && model_display="${model_display} ${C_YELLOW}fast${C_RESET}"
+# thinking: surface only the off state (the effort badge already implies thinking on)
+[ "$thinking_enabled" = "false" ] && model_display="${model_display} ${C_DIM}no-think${C_RESET}"
 
 used_str=$(format_tokens "$current_input")
 total_str=$(format_tokens "$window_size")
@@ -169,8 +183,13 @@ if [ -n "$week_reset" ] && [ -n "$week_pct" ]; then
     [ -n "$week_reset_str" ] && line3_parts+=("${C_WHITE}resets ${week_reset_str}${C_RESET}")
 fi
 
-# Session cost (from transcript JSONL)
+# Session cost — native cost.total_cost_usd (authoritative, computed by Claude
+# Code itself) is the headline; the per-side in/out split comes from the
+# transcript JSONL estimate as a dim secondary hint. Falls back to the JSONL
+# total on older CC that lacks the cost field.
+native_cost=$(echo "$input" | jq -r 'if (.cost.total_cost_usd|type)=="number" then .cost.total_cost_usd else empty end' 2>/dev/null)
 credit_str=""
+_in=""; _out=""; _tot=""
 if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" ]; then
     _cache_base="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
     mkdir -p -m 0700 "$_cache_base" 2>/dev/null
@@ -185,7 +204,6 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" 
             _in=$(  printf '%s' "$cached_credit" | cut -f1)
             _out=$( printf '%s' "$cached_credit" | cut -f2)
             _tot=$( printf '%s' "$cached_credit" | cut -f3)
-            credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
             cur_mtime=""
         fi
     fi
@@ -197,26 +215,46 @@ if [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" 
             _in=$(  printf '%s' "$credit" | cut -f1)
             _out=$( printf '%s' "$credit" | cut -f2)
             _tot=$( printf '%s' "$credit" | cut -f3)
-            credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
         fi
     fi
 else
-    # Fallback: live cumulative counts (fresh sessions)
+    # Fallback: live cumulative counts (fresh sessions, no transcript yet).
+    # Opus rates ($5/$25 per 1M) — kept in sync with set_rates() in credit-lib.sh.
     total_in=$(echo "$input" | jq -r '.context_window.total_input_tokens  // 0')
     total_out=$(echo "$input"| jq -r '.context_window.total_output_tokens // 0')
     total_tokens=$(( total_in + total_out ))
     if [ "$total_tokens" -gt 0 ]; then
         read -r _in _out _tot < <(awk -v ti="$total_in" -v to="$total_out" \
             'BEGIN {
-                in_c  = ti * 15.00 / 1000000
-                out_c = to * 75.00 / 1000000
+                in_c  = ti * 5.00 / 1000000
+                out_c = to * 25.00 / 1000000
                 printf "%.4f\t%.4f\t%.4f", in_c, out_c, in_c+out_c
             }')
-        credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
     fi
 fi
 
+# Assemble: native total is primary (authoritative to the cent), JSONL in/out
+# split is the secondary dim hint; fall back to the JSONL total on older CC.
+if [ -n "$native_cost" ]; then
+    native_fmt=$(printf '%.2f' "$native_cost")
+    if [ -n "$_in" ] && [ -n "$_out" ]; then
+        credit_str="${C_CYAN}\$${native_fmt}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
+    else
+        credit_str="${C_CYAN}\$${native_fmt}${C_RESET}"
+    fi
+elif [ -n "$_tot" ]; then
+    credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
+fi
+
 [ -n "$credit_str" ] && line3_parts+=("$credit_str")
+
+# Lines added/removed this session (new schema; cheap top-level fields)
+lines_added=$(echo "$input"   | jq -r 'if (.cost.total_lines_added|type)=="number"   then (.cost.total_lines_added|floor)   else empty end' 2>/dev/null)
+lines_removed=$(echo "$input" | jq -r 'if (.cost.total_lines_removed|type)=="number" then (.cost.total_lines_removed|floor) else empty end' 2>/dev/null)
+if [ -n "$lines_added" ] && [ -n "$lines_removed" ] \
+   && { [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; } 2>/dev/null; then
+    line3_parts+=("${C_GREEN}+${lines_added}${C_RESET}${C_DIM}/${C_RESET}${C_RED}-${lines_removed}${C_RESET}")
+fi
 
 # Join line3 parts with separator
 for (( i=0; i<${#line3_parts[@]}; i++ )); do
