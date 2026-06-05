@@ -55,7 +55,7 @@ echo "Installing to: $TARGET"
 # --- Bash scripts ---
 echo ""
 echo "=== Bash scripts ==="
-for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh display-lib.sh backup-bridge.sh; do
+for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh display-lib.sh backup-bridge.sh context-lib.sh; do
     src="${SCRIPT_DIR}/bin/${f}"
     dst="${TARGET}/${f}"
     if [ ! -f "$src" ]; then
@@ -74,7 +74,7 @@ done
 echo ""
 echo "=== Node.js backup scripts ==="
 mkdir -p "$NODE_TARGET"
-for f in backup-core.mjs backup-compactor.mjs conv-backup.mjs trigger-backup.mjs; do
+for f in backup-core.mjs backup-compactor.mjs conv-backup.mjs trigger-backup.mjs context-breakdown.mjs; do
     src="${SCRIPT_DIR}/node/${f}"
     dst="${NODE_TARGET}/${f}"
     if [ ! -f "$src" ]; then

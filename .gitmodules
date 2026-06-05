@@ -1,0 +1,3 @@
+[submodule "reference/claude-context-visualizer"]
+	path = reference/claude-context-visualizer
+	url = https://github.com/h4ni0/claude-context-visualizer

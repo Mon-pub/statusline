@@ -2,17 +2,22 @@
 # statusline-command.sh — Claude Code statusline with ANSI colors, multi-line
 # layout, rate limit bars, session cost, peak/off-peak, and backup integration.
 #
-# Output (3-4 lines):
+# Output (3-5 lines):
 #   Line 1: Model (effort) [fast] [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: 5h: ●●●●○○○○ 43% | 7d: ●●○○○○○○ 22% | ctx: ●●●○… | Off-peak (4h12m)
-#   Line 3: resets 5:00pm (3h16m) | resets Mon, 8:00am | $19.34 (in:$.. out:$..) | +1739/-223
-#   Line 4: (conditional) -> .claude/backups/3-backup-2026-06-02.md
+#   Line 2: ctx: ●●●○… | fill: results 33% · attach 29% · msgs 21% · tools 16%
+#   Line 3: 5h: ●●●●○○○○ 43% | 7d: ●●○○○○○○ 22% | Off-peak (4h12m)
+#   Line 4: resets 5:00pm (3h16m) | resets Mon, 8:00am | $19.34 | +1739/-223
+#   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
+#
+# The 'fill:' segment on line 2 appears only once its node-written cache exists.
 #
 # Effort is read from the live stdin (.effort.level, authoritative for mid-session
 # /effort changes) and falls back to settings.json on older Claude Code. The
 # 'fast' and 'no-think' badges appear only in their non-default states. The cost
-# headline uses the native .cost.total_cost_usd when present (the JSONL estimate
-# supplies the dim in/out split); +added/-removed comes from .cost.total_lines_*.
+# headline uses the native .cost.total_cost_usd when present (no transcript scan);
+# only older Claude Code without that field falls back to the JSONL estimate (with
+# a dim in/out split). +added/-removed comes from .cost.total_lines_*. The 'ctx
+# fill' line is fed by a node-written cache (see context-lib.sh).
 #
 # Configuration in settings.json:
 #   { "statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" } }
@@ -21,6 +26,8 @@
 source "$(dirname "${BASH_SOURCE[0]}")/credit-lib.sh"
 # shellcheck source=display-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/display-lib.sh"
+# shellcheck source=context-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/context-lib.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -162,10 +169,6 @@ if [ -n "$sonnet_pct" ]; then
     line2_parts+=("${C_WHITE}sonnet:${C_RESET}${C_CYAN}${sonnet_int}%${C_RESET}")
 fi
 
-# Context bar (16-char, colored)
-ctx_bar=$(build_bar "$pct_used" 16)
-line2_parts+=("${C_WHITE}ctx:${C_RESET} ${ctx_bar}")
-
 # Peak/Off-peak
 peak_output=$(get_peak_status)
 peak_label="${peak_output%% *}"
@@ -182,6 +185,18 @@ for (( i=0; i<${#line2_parts[@]}; i++ )); do
     [ "$i" -gt 0 ] && line2="${line2}${C_SEP}"
     line2="${line2}${line2_parts[$i]}"
 done
+
+# ============================================================================
+# CONTEXT LINE (emitted as line 2): the 16-char context bar plus the per-category
+# "fill" breakdown of what is eating the window. The bar always shows; the
+# breakdown ("fill:") is appended only when its node-written cache exists.
+# ============================================================================
+ctx_bar=$(build_bar "$pct_used" 16)
+ctx_line="${C_WHITE}ctx:${C_RESET} ${ctx_bar}"
+if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
+    ctx_break=$(get_context_breakdown "$session_id" "$transcript_path")
+    [ -n "$ctx_break" ] && ctx_line="${ctx_line}${C_SEP}${C_WHITE}fill:${C_RESET} ${ctx_break}"
+fi
 
 # ============================================================================
 # LINE 3: Reset times + session cost
@@ -290,8 +305,9 @@ fi
 # ============================================================================
 
 printf '%s' "$line1"
-[ -n "$line2" ] && printf '\n%s' "$line2"
-[ -n "$line3" ] && printf '\n%s' "$line3"
-[ -n "$line4" ] && printf '\n%s' "$line4"
+[ -n "$ctx_line" ] && printf '\n%s' "$ctx_line"
+[ -n "$line2" ]    && printf '\n%s' "$line2"
+[ -n "$line3" ]    && printf '\n%s' "$line3"
+[ -n "$line4" ]    && printf '\n%s' "$line4"
 
 exit 0
