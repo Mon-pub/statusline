@@ -4,7 +4,8 @@
 # Sourced by statusline-command.sh (after display-lib.sh, for the C_* colors).
 # Provides:
 #   get_context_breakdown <session_id> <transcript_path>
-#       — prints a colored "results 48% · tools 22% · msgs 20%" segment, or
+#       — prints a colored "tool out 48% · tool cmd 22% · chat In+Out 20%"
+#         segment, or
 #         nothing if no breakdown is available yet.
 #
 # Design mirrors backup-bridge: the bash side only ever reads a small JSON cache
@@ -18,11 +19,11 @@ _CTX_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
 # Short display labels for the four buckets the node side emits.
 _ctx_label() {
     case "$1" in
-        msgs)    printf 'msgs'    ;;
-        tools)   printf 'tools'   ;;
-        results) printf 'results' ;;
-        attach)  printf 'attach'  ;;
-        *)       printf '%s' "$1" ;;
+        msgs)    printf 'chat In+Out' ;;
+        tools)   printf 'tool cmd'    ;;
+        results) printf 'tool out'    ;;
+        attach)  printf 'attached'    ;;
+        *)       printf '%s' "$1"     ;;
     esac
 }
 

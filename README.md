@@ -4,7 +4,7 @@ A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/c
 
 ```
 Opus 4.8 (1M context) (xhigh) | 219k/1m (22% used) | 748k 74% free
-ctx: ●●●○○○○○○○○○○○○○ | fill: results 33% · attach 24% · tools 23% · msgs 20%
+ctx: ●●●○○○○○○○○○○○○○ | fill: tool out 33% · attached 24% · tool cmd 23% · chat In+Out 20%
 5h: ●○○○○○○○○○ 5% | 7d: ●○○○○○○○○○ 10% | Off-peak (4h12m)
 resets 6:00pm (3h1m) | resets Mon, 8:00am | $19.34 | +1739/-223
 -> .claude/backups/3-backup-2026-06-02-1459.md
@@ -17,7 +17,7 @@ resets 6:00pm (3h1m) | resets Mon, 8:00am | $19.34 | +1739/-223
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. Falls back to `settings.json` on older Claude Code.
 - **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly.
-- **Context fill breakdown** — a `ctx fill: results 33% · attach 29% · msgs 21% · tools 16%` line showing *what* is consuming the live window (tool results vs. attachments vs. messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse runs in the background (node) and the statusline only reads a small cache, so long sessions never re-parse on every render. Hidden until data exists.
+- **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing *what* is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse runs in the background (node) and the statusline only reads a small cache, so long sessions never re-parse on every render. Hidden until data exists.
 - **Free tokens until compact** — subtracts the 33k autocompact buffer to show real usable space.
 - **Rate limit bars** — 5-hour and 7-day windows with colored progress bars. Sonnet-specific quota when available.
 - **Friendly reset times** — `5:00pm (3h16m)` for current window, `Mon, 8:00am` for weekly, `feb 1` for monthly.
