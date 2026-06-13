@@ -6,7 +6,7 @@ A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/c
 Opus 4.8 (1M context) (xhigh) | 219k/1m (22% used) | 748k 74% free
 ctx: ●●●○○○○○○○○○○○○○ cache 87% | fill: tool out 33% · attached 24% · tool cmd 23% · chat In+Out 20%
 5h: ●●●●●●○○○○ 60% ->cap 40m | 7d: ●●●●●●●○○○ 74%
-resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | 2h45m | +1739/-223
+resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
 -> .claude/backups/3-backup-2026-06-02-1459.md
 ```
 
@@ -24,6 +24,7 @@ resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | 2h45m | +1739/-223
 - **Burn-rate projection** — when your current pace is on track to hit a window's limit *before* it resets, the bar gains a red `->cap 1h12m` marker (projected time to 100%). It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
 - **Friendly reset times** — `5:00pm (3h16m)` for the 5-hour window; the weekly reset shows day + time + countdown, e.g. `Tue, 5:35pm (3d2h)` (a calendar date replaces the weekday when it is more than 7 days out). The countdown makes the true distance to the weekly reset visible — it lands at an account-assigned fixed time, not always a fixed weekday.
 - **Session cost** — headline uses Claude Code's authoritative `cost.total_cost_usd` when present (the transcript-JSONL estimate supplies the dim `in/out` split). Falls back to the per-model JSONL estimate on older Claude Code. Survives `/resume`.
+- **Cost burn rate** — `$/hr` spend velocity (`total_cost_usd` ÷ session duration), shown dim next to the cost (e.g. `$7.03/h`). Hidden until both the cost and a positive duration are known.
 - **Session duration** — wall-clock session time from `cost.total_duration_ms`, shown dim next to the cost (e.g. `2h45m`).
 - **Lines changed** — `+added/-removed` diff stat for the session, from `cost.total_lines_*`.
 

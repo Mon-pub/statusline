@@ -304,9 +304,25 @@ fi
 
 [ -n "$credit_str" ] && line3_parts+=("$credit_str")
 
+# Cost burn rate + session duration, both from the .cost object.
+dur_ms=$(echo "$input" | jq -r 'if (.cost.total_duration_ms|type)=="number" then (.cost.total_duration_ms|floor) else empty end' 2>/dev/null)
+# Numeric session cost: the native total when present, else the JSONL-estimate total.
+cost_num="${native_cost:-${_tot:-}}"
+
+# Burn rate ($/hr): total cost over wall-clock session time. Hidden unless both
+# the cost and a positive duration are known. awk does the float division.
+if [ -n "$cost_num" ] && [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; then
+    rate_str=$(awk -v c="$cost_num" -v ms="$dur_ms" 'BEGIN {
+        if (ms <= 0) exit
+        r = c * 3600000.0 / ms
+        if (r < 0) exit
+        printf "%.2f", r
+    }')
+    [ -n "$rate_str" ] && line3_parts+=("${C_DIM}\$${rate_str}/h${C_RESET}")
+fi
+
 # Session wall-clock duration (cost.total_duration_ms; current schema). Cheap,
 # always-present alongside the cost object. Absent -> hidden.
-dur_ms=$(echo "$input" | jq -r 'if (.cost.total_duration_ms|type)=="number" then (.cost.total_duration_ms|floor) else empty end' 2>/dev/null)
 if [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; then
     dur_str=$(fmt_duration_ms "$dur_ms")
     [ -n "$dur_str" ] && line3_parts+=("${C_DIM}${dur_str}${C_RESET}")
