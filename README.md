@@ -4,8 +4,7 @@ A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/c
 
 ```
 Opus 4.8 (1M context) (xhigh) | 219k/1m (22% used) | 748k 74% free
-ctx: ●●●○○○○○○○○○○○○○ cache 87%
-5h: ●●●●●●○○○○ 60% ->cap 40m | 7d: ●●●●●●●○○○ 74%
+ctx: ●●●○○○○○○○○○○○○○ cache 87% | 5h: ●●●●●●○○○○ 60% ->cap 40m | 7d: ●●●●●●●○○○ 74%
 fill: tool out 33% · attached 24% · tool cmd 23% · chat In+Out 20%
 resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
 -> .claude/backups/3-backup-2026-06-02-1459.md
@@ -14,7 +13,7 @@ resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1
 ## Features
 
 ### Display (bash)
-- **ANSI-colored multi-line output** — up to 6 lines (model, context bar, rate limits, context-fill breakdown, resets/cost, and an optional backup path), colored with RGB escape sequences. The rate-limit, fill, and backup lines each appear only when their data exists.
+- **ANSI-colored multi-line output** — up to 5 lines (model; context bar + cache + rate-limit bars; context-fill breakdown; resets/cost; and an optional backup path), colored with RGB escape sequences. The fill and backup lines each appear only when their data exists.
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. Falls back to `settings.json` on older Claude Code.
 - **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly.

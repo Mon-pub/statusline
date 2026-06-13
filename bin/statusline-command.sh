@@ -2,13 +2,12 @@
 # statusline-command.sh — Claude Code statusline with ANSI colors, multi-line
 # layout, rate limit bars, burn-rate projection, session cost, and backup integration.
 #
-# Output (up to 6 lines; rate, fill, and backup lines are each conditional):
+# Output (up to 5 lines; fill and backup lines are each conditional):
 #   Line 1: Model (effort) [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: ctx: ●●●○… cache 78%
-#   Line 3: 5h: ●●●●○○○○ 43% ->cap 1h12m | 7d: ●●○○○○○○ 22%
-#   Line 4: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
-#   Line 5: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
-#   Line 6: (conditional) -> .claude/backups/3-backup-2026-06-02.md
+#   Line 2: ctx: ●●●○… cache 78% | 5h: ●●●●○○○○ 43% ->cap 1h12m | 7d: ●●○○○○○○ 22%
+#   Line 3: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
+#   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
+#   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
 #
 # The 'fill:' line appears only once its node-written cache exists; 'cache NN%'
 # on the ctx line shows the prompt-cache hit-rate. The '->cap Xh Ym' marker on a rate
@@ -372,9 +371,11 @@ fi
 # OUTPUT
 # ============================================================================
 
+# The 5h/7d rate bars share the ctx line, after the cache hit-rate.
+[ -n "$line2" ] && ctx_line="${ctx_line}${C_SEP}${line2}"
+
 printf '%s' "$line1"
-[ -n "$ctx_line" ]  && printf '\n%s' "$ctx_line"   # ctx bar + cache
-[ -n "$line2" ]     && printf '\n%s' "$line2"        # 5h / 7d rate bars
+[ -n "$ctx_line" ]  && printf '\n%s' "$ctx_line"   # ctx bar + cache + 5h/7d
 [ -n "$fill_line" ] && printf '\n%s' "$fill_line"    # context-fill breakdown
 [ -n "$line3" ]     && printf '\n%s' "$line3"        # resets / cost / $hr / dur / lines
 [ -n "$line4" ]     && printf '\n%s' "$line4"        # backup path
