@@ -1,28 +1,30 @@
 # claude-statusline
 
-A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/claude-code) with ANSI colors, rate limit bars, session cost tracking, peak/off-peak indicator, and automatic context backup.
+A rich multi-line statusline for [Claude Code](https://docs.claude.com/en/docs/claude-code) with ANSI colors, rate-limit bars with burn-rate projection, context-fill breakdown, session cost tracking, and automatic context backup.
 
 ```
 Opus 4.8 (1M context) (xhigh) | 219k/1m (22% used) | 748k 74% free
-ctx: ●●●○○○○○○○○○○○○○ | fill: tool out 33% · attached 24% · tool cmd 23% · chat In+Out 20%
-5h: ●○○○○○○○○○ 5% | 7d: ●○○○○○○○○○ 10% | Off-peak (4h12m)
-resets 6:00pm (3h1m) | resets Mon, 8:00am | $19.34 | +1739/-223
+ctx: ●●●○○○○○○○○○○○○○ cache 87% | fill: tool out 33% · attached 24% · tool cmd 23% · chat In+Out 20%
+5h: ●●●●●●○○○○ 60% ->cap 40m | 7d: ●●●●●●●○○○ 74%
+resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | 2h45m | +1739/-223
 -> .claude/backups/3-backup-2026-06-02-1459.md
 ```
 
 ## Features
 
 ### Display (bash)
-- **ANSI-colored multi-line output** — 3 lines (4 when a backup exists), colored with RGB escape sequences.
+- **ANSI-colored multi-line output** — 4 lines (5 when a backup exists), colored with RGB escape sequences.
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. Falls back to `settings.json` on older Claude Code.
 - **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly.
 - **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing *what* is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse runs in the background (node) and the statusline only reads a small cache, so long sessions never re-parse on every render. Hidden until data exists.
+- **Cache hit-rate** — `cache 78%` on the context line: the share of input tokens served from the prompt cache (`cache_read / total input`), a high-signal proxy for how cost-efficient a long session is. Hidden until there's input (e.g. right after `/compact`).
 - **Free tokens until compact** — subtracts the 33k autocompact buffer to show real usable space.
-- **Rate limit bars** — 5-hour and 7-day windows with colored progress bars. Sonnet-specific quota when available.
-- **Friendly reset times** — `5:00pm (3h16m)` for current window, `Mon, 8:00am` for weekly, `feb 1` for monthly.
-- **Peak/off-peak indicator** — weekdays 8AM-2PM ET are peak hours. Shows countdown to next transition.
+- **Rate-limit bars** — 5-hour and 7-day (weekly) windows with colored progress bars, driven by Claude Code's own `rate_limits.{five_hour,seven_day}.used_percentage`. Percentages are clamped to 0–100 so a transient bogus value Claude Code can emit before a window has data is ignored rather than rendered.
+- **Burn-rate projection** — when your current pace is on track to hit a window's limit *before* it resets, the bar gains a red `->cap 1h12m` marker (projected time to 100%). It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
+- **Friendly reset times** — `5:00pm (3h16m)` for the 5-hour window; the weekly reset shows day + time + countdown, e.g. `Tue, 5:35pm (3d2h)` (a calendar date replaces the weekday when it is more than 7 days out). The countdown makes the true distance to the weekly reset visible — it lands at an account-assigned fixed time, not always a fixed weekday.
 - **Session cost** — headline uses Claude Code's authoritative `cost.total_cost_usd` when present (the transcript-JSONL estimate supplies the dim `in/out` split). Falls back to the per-model JSONL estimate on older Claude Code. Survives `/resume`.
+- **Session duration** — wall-clock session time from `cost.total_duration_ms`, shown dim next to the cost (e.g. `2h45m`).
 - **Lines changed** — `+added/-removed` diff stat for the session, from `cost.total_lines_*`.
 
 ### Backup system (Node.js)

@@ -18,7 +18,7 @@ thing each.
 
 | Input | Source | Treatment |
 |-------|--------|-----------|
-| Statusline stdin JSON | Claude Code | Numeric fields are coerced to integers at the `jq` boundary before any `bash` arithmetic; printed strings (`model.display_name`, `output_style.name`) are stripped of control bytes; `session_id` is reduced to `[A-Za-z0-9-]` before being used in any file path. |
+| Statusline stdin JSON | Claude Code | Numeric fields are coerced to integers at the `jq` boundary before any `bash` arithmetic; rate-limit percentages are additionally range-checked to `0–100` so a malformed or out-of-range value is dropped rather than rendered; printed strings (`model.display_name`, `output_style.name`) are stripped of control bytes; `session_id` is reduced to `[A-Za-z0-9-]` before being used in any file path. |
 | Transcript JSONL | On disk (`~/.claude/projects/...`) | Parsed read-only for token/cost accounting, backup summaries, and the context-fill breakdown. Content is never `eval`'d. |
 | Delta / cache files | `$XDG_CACHE_HOME/claude-statusline` | Values are validated as integers before arithmetic. The breakdown cache (`breakdown-<id>.json`) is written `0600` via a temp-file + atomic rename and read back through `jq`; its numeric fields are re-guarded before use. |
 | Backup markdown | `.claude/backups/` | Session ids read back from backups are re-validated against `^[A-Za-z0-9-]{1,64}$` before being placed in any `claude --resume` command string. |

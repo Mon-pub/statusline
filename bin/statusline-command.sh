@@ -1,23 +1,28 @@
 #!/bin/bash
 # statusline-command.sh — Claude Code statusline with ANSI colors, multi-line
-# layout, rate limit bars, session cost, peak/off-peak, and backup integration.
+# layout, rate limit bars, burn-rate projection, session cost, and backup integration.
 #
 # Output (3-5 lines):
-#   Line 1: Model (effort) [fast] [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: ctx: ●●●○… | fill: results 33% · attach 29% · msgs 21% · tools 16%
-#   Line 3: 5h: ●●●●○○○○ 43% | 7d: ●●○○○○○○ 22% | Off-peak (4h12m)
-#   Line 4: resets 5:00pm (3h16m) | resets Mon, 8:00am | $19.34 | +1739/-223
+#   Line 1: Model (effort) [no-think] | 219k/1m (22% used) | 748k 74% free
+#   Line 2: ctx: ●●●○… cache 78% | fill: tool out 33% · attached 29% · ...
+#   Line 3: 5h: ●●●●○○○○ 43% ->cap 1h12m | 7d: ●●○○○○○○ 22%
+#   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | 2h45m | +1739/-223
 #   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
 #
-# The 'fill:' segment on line 2 appears only once its node-written cache exists.
+# The 'fill:' segment on line 2 appears only once its node-written cache exists;
+# 'cache NN%' shows the prompt-cache hit-rate. The '->cap Xh Ym' marker on a rate
+# bar appears only when the current burn rate is on track to hit that window's
+# limit before it resets. The weekly reset carries a countdown so its true
+# distance is visible (the window resets at an account-assigned fixed time).
 #
 # Effort is read from the live stdin (.effort.level, authoritative for mid-session
 # /effort changes) and falls back to settings.json on older Claude Code. The
-# 'fast' and 'no-think' badges appear only in their non-default states. The cost
-# headline uses the native .cost.total_cost_usd when present (no transcript scan);
-# only older Claude Code without that field falls back to the JSONL estimate (with
-# a dim in/out split). +added/-removed comes from .cost.total_lines_*. The 'ctx
-# fill' line is fed by a node-written cache (see context-lib.sh).
+# 'no-think' badge appears only in its non-default state. The cost headline uses
+# the native .cost.total_cost_usd when present (no transcript scan); only older
+# Claude Code without that field falls back to the JSONL estimate (with a dim
+# in/out split). +added/-removed comes from .cost.total_lines_*; the session
+# duration from .cost.total_duration_ms. The 'ctx fill' line is fed by a
+# node-written cache (see context-lib.sh).
 #
 # Configuration in settings.json:
 #   { "statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" } }
@@ -102,14 +107,15 @@ free_pct=$(awk -v f="$free_tokens" -v w="$window_size" 'BEGIN {
 
 # Rate limits
 # Numeric-or-empty for all of these; resets_at also flows into `$(( epoch - now ))`.
-five_pct=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+five_pct=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty | if type=="number" and . >= 0 and . <= 100 then . else empty end' 2>/dev/null)
 five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
-week_pct=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+week_pct=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty | if type=="number" and . >= 0 and . <= 100 then . else empty end' 2>/dev/null)
 week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
 
-# Sonnet-specific quota: only the documented path. (Earlier speculative field
-# shapes were never present in any released schema.) Numeric-or-empty.
-sonnet_pct=$(echo "$input" | jq -r '.rate_limits.sonnet.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
+# NOTE: there is no per-model (sonnet/opus) quota on the statusline stdin. The
+# documented rate_limits object has exactly two children — five_hour and
+# seven_day. A per-model weekly bucket exists only on the undocumented authed
+# OAuth usage endpoint, out of scope for a pure-stdin, never-break statusline.
 
 # Session info
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
@@ -143,42 +149,40 @@ free_display="${C_ORANGE}${free_str}${C_RESET} ${C_BLUE}${free_pct}% free${C_RES
 line1="${model_display}${C_SEP}${tokens_display}${C_SEP}${free_display}"
 
 # ============================================================================
-# LINE 2: Rate limit bars + peak indicator
+# LINE 2: Rate limit bars + burn-rate projection
+#
+# Each bar may carry a "->cap Xh Ym" marker: the projected time until the window
+# hits 100% at the current burn rate, shown ONLY when that is sooner than the
+# window resets (i.e. you are on track to be capped before relief). When you are
+# not on track to hit the cap, no marker shows — the bar stays clean.
 # ============================================================================
 
 line2=""
 line2_parts=()
 
-# 5-hour bar
+# 5-hour bar (rolling 5h window = 18000s)
 if [ -n "$five_pct" ]; then
     five_int=$(printf '%.0f' "$five_pct")
     five_bar=$(build_bar "$five_int" 10)
-    line2_parts+=("${C_WHITE}5h:${C_RESET} ${five_bar} ${C_GREEN}${five_int}%${C_RESET}")
+    five_seg="${C_WHITE}5h:${C_RESET} ${five_bar} ${C_GREEN}${five_int}%${C_RESET}"
+    if [ -n "$five_reset" ]; then
+        five_cap=$(project_cap "$five_pct" "$five_reset" 18000)
+        [ -n "$five_cap" ] && five_seg="${five_seg} ${C_RED}->cap ${five_cap}${C_RESET}"
+    fi
+    line2_parts+=("$five_seg")
 fi
 
-# 7-day bar
+# 7-day bar (weekly window = 604800s)
 if [ -n "$week_pct" ]; then
     week_int=$(printf '%.0f' "$week_pct")
     week_bar=$(build_bar "$week_int" 10)
-    line2_parts+=("${C_WHITE}7d:${C_RESET} ${week_bar} ${C_GREEN}${week_int}%${C_RESET}")
+    week_seg="${C_WHITE}7d:${C_RESET} ${week_bar} ${C_GREEN}${week_int}%${C_RESET}"
+    if [ -n "$week_reset" ]; then
+        week_cap=$(project_cap "$week_pct" "$week_reset" 604800)
+        [ -n "$week_cap" ] && week_seg="${week_seg} ${C_RED}->cap ${week_cap}${C_RESET}"
+    fi
+    line2_parts+=("$week_seg")
 fi
-
-# Sonnet rate limit (no bar, just percentage)
-if [ -n "$sonnet_pct" ]; then
-    sonnet_int=$(printf '%.0f' "$sonnet_pct")
-    line2_parts+=("${C_WHITE}sonnet:${C_RESET}${C_CYAN}${sonnet_int}%${C_RESET}")
-fi
-
-# Peak/Off-peak
-peak_output=$(get_peak_status)
-peak_label="${peak_output%% *}"
-peak_countdown="${peak_output#* }"
-if [ "$peak_label" = "PEAK" ]; then
-    peak_display="${C_RED}Peak${C_RESET} ${C_WHITE}(${peak_countdown})${C_RESET}"
-else
-    peak_display="${C_GREEN}Off-peak${C_RESET} ${C_WHITE}(${peak_countdown})${C_RESET}"
-fi
-line2_parts+=("$peak_display")
 
 # Join line2 parts with separator
 for (( i=0; i<${#line2_parts[@]}; i++ )); do
@@ -193,6 +197,17 @@ done
 # ============================================================================
 ctx_bar=$(build_bar "$pct_used" 16)
 ctx_line="${C_WHITE}ctx:${C_RESET} ${ctx_bar}"
+
+# Cache hit-rate: share of the current input that was served from the prompt
+# cache (cache_read / all input tokens). High cache reuse = lower cost; this is a
+# cheap, high-signal number from tokens we already extracted. Hidden when there
+# is no input yet (e.g. right after /compact, current_usage is null -> all zero).
+cache_total=$(( input_tokens + cache_read + cache_create ))
+if [ "$cache_total" -gt 0 ]; then
+    cache_pct=$(awk -v r="$cache_read" -v t="$cache_total" 'BEGIN { printf "%d", (r/t)*100 }')
+    [[ "$cache_pct" =~ ^[0-9]+$ ]] && ctx_line="${ctx_line} ${C_DIM}cache${C_RESET} ${C_CYAN}${cache_pct}%${C_RESET}"
+fi
+
 if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
     ctx_break=$(get_context_breakdown "$session_id" "$transcript_path")
     [ -n "$ctx_break" ] && ctx_line="${ctx_line}${C_SEP}${C_WHITE}fill:${C_RESET} ${ctx_break}"
@@ -263,6 +278,14 @@ elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id
 fi
 
 [ -n "$credit_str" ] && line3_parts+=("$credit_str")
+
+# Session wall-clock duration (cost.total_duration_ms; current schema). Cheap,
+# always-present alongside the cost object. Absent -> hidden.
+dur_ms=$(echo "$input" | jq -r 'if (.cost.total_duration_ms|type)=="number" then (.cost.total_duration_ms|floor) else empty end' 2>/dev/null)
+if [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; then
+    dur_str=$(fmt_duration_ms "$dur_ms")
+    [ -n "$dur_str" ] && line3_parts+=("${C_DIM}${dur_str}${C_RESET}")
+fi
 
 # Lines added/removed this session (new schema; cheap top-level fields)
 lines_added=$(echo "$input"   | jq -r 'if (.cost.total_lines_added|type)=="number"   then (.cost.total_lines_added|floor)   else empty end' 2>/dev/null)

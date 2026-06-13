@@ -7,7 +7,8 @@
 #   build_bar <pct> <width>         — colored ●○ progress bar
 #   format_tokens <num>             — compact "50k" / "1.2m" display
 #   fmt_reset_friendly <epoch> <style>  — time/datetime/date reset formatting
-#   get_peak_status                 — outputs "PEAK|OFF_PEAK <countdown>"
+#   project_cap <pct> <epoch> <win> — time-to-cap if on track to hit it first
+#   fmt_duration_ms <ms>            — compact "2h45m" wall-clock duration
 
 # ---------------------------------------------------------------------------
 # ANSI RGB color constants
@@ -83,7 +84,7 @@ format_tokens() {
 # ---------------------------------------------------------------------------
 # fmt_reset_friendly <epoch> <style>
 #   style "time":     "5:00pm (3h16m)"
-#   style "datetime": "Thu, 7:00pm"
+#   style "datetime": "Mon, 8:00am (3d2h)"   (date instead of weekday when >7d out)
 #   style "date":     "feb 1"
 #
 # Uses date -d @epoch (Linux) with date -r epoch (macOS) fallback.
@@ -114,8 +115,38 @@ fmt_reset_friendly() {
             printf '%s' "$time_str"
             ;;
         datetime)
-            date -d "@${epoch}" "+%a, %-I:%M%P" 2>/dev/null \
-            || date -r  "$epoch"  "+%a, %-I:%M%P" 2>/dev/null
+            local now remaining_s base_fmt dt_str
+            now=$(date +%s)
+            remaining_s=$(( epoch - now ))
+            # Weekly resets land at an account-assigned fixed time, so the reset
+            # can be anywhere from hours to ~7 days out. A weekday alone ("Mon")
+            # is ambiguous; the appended countdown disambiguates. For resets more
+            # than 7 days away (shouldn't happen for a 7-day window, but guard it)
+            # show an explicit calendar date instead of a weekday.
+            if [ "$remaining_s" -gt 604800 ]; then
+                base_fmt="+%b %-d, %-I:%M%P"
+            else
+                base_fmt="+%a, %-I:%M%P"
+            fi
+            dt_str=$(date -d "@${epoch}" "$base_fmt" 2>/dev/null \
+                  || date -r  "$epoch"  "$base_fmt" 2>/dev/null)
+            [ -z "$dt_str" ] && return
+            if [ "$remaining_s" -gt 0 ]; then
+                local total_min=$(( remaining_s / 60 ))
+                local d=$(( total_min / 1440 ))
+                local h=$(( (total_min % 1440) / 60 ))
+                local m=$(( total_min % 60 ))
+                local cd
+                if [ "$d" -gt 0 ]; then
+                    cd="${d}d${h}h"
+                elif [ "$h" -gt 0 ]; then
+                    cd="${h}h${m}m"
+                else
+                    cd="${m}m"
+                fi
+                dt_str="${dt_str} (${cd})"
+            fi
+            printf '%s' "$dt_str"
             ;;
         date|*)
             local month_str
@@ -128,66 +159,56 @@ fmt_reset_friendly() {
 }
 
 # ---------------------------------------------------------------------------
-# get_peak_status
-# Peak = weekdays 8AM-2PM ET (UTC 12:00-18:00). Everything else = off-peak.
-# Outputs: "PEAK <countdown>" or "OFF_PEAK <countdown>"
+# project_cap <used_pct> <resets_at_epoch> <window_len_s>
+# Linear burn-rate projection for a rate-limit window. Echoes the time until the
+# limit is projected to hit 100% (e.g. "1h12m") ONLY when that is sooner than the
+# window resets — i.e. when you are on track to be capped before relief. Echoes
+# nothing when you will not hit the cap first, or when inputs are unusable.
+# The window is treated as the <window_len_s> seconds ending at <resets_at>, so
+# elapsed = window - (resets_at - now); this holds for the rolling 5h window and
+# is a good approximation for the trailing-7d weekly window.
 # ---------------------------------------------------------------------------
-get_peak_status() {
-    local utc_day utc_hour utc_min
-    utc_day=$(date -u +%w)    # 0=Sun, 6=Sat
-    utc_hour=$(date -u +%-H)
-    utc_min=$(date -u +%-M)
+project_cap() {
+    local used="$1" resets_at="$2" window="$3"
+    [[ "$used"      =~ ^[0-9]+(\.[0-9]+)?$ ]] || return
+    [[ "$resets_at" =~ ^[0-9]+$ ]] || return
+    [[ "$window"    =~ ^[0-9]+$ ]] || return
+    local now remaining elapsed
+    now=$(date +%s)
+    remaining=$(( resets_at - now ))
+    [ "$remaining" -le 0 ] && return            # already reset / clock skew
+    [ "$remaining" -ge "$window" ] && return    # window not started yet / skew
+    elapsed=$(( window - remaining ))
+    [ "$elapsed" -le 0 ] && return
+    awk -v u="$used" -v el="$elapsed" -v rem="$remaining" 'BEGIN {
+        if (u <= 0 || u >= 100) exit            # nothing to project
+        rate = u / el                            # percent consumed per second
+        if (rate <= 0) exit
+        s = (100 - u) / rate                     # seconds to reach 100%
+        if (s >= rem) exit                       # wont hit cap before reset
+        s = int(s)
+        h = int(s / 3600); m = int((s % 3600) / 60)
+        if (h > 0) printf "%dh%dm", h, m
+        else printf "%dm", (m < 1 ? 1 : m)
+    }'
+}
 
-    local is_weekend=0
-    [ "$utc_day" -eq 0 ] || [ "$utc_day" -eq 6 ] && is_weekend=1
-
-    local is_peak=0
-    if [ "$is_weekend" -eq 0 ] && [ "$utc_hour" -ge 12 ] && [ "$utc_hour" -lt 18 ]; then
-        is_peak=1
-    fi
-
-    local minutes_until_flip
-    if [ "$is_peak" -eq 1 ]; then
-        # Minutes until peak ends (UTC 18:00)
-        minutes_until_flip=$(( (17 - utc_hour) * 60 + (60 - utc_min) ))
-    elif [ "$is_weekend" -eq 0 ] && [ "$utc_hour" -lt 12 ]; then
-        # Before peak today
-        minutes_until_flip=$(( (11 - utc_hour) * 60 + (60 - utc_min) ))
+# ---------------------------------------------------------------------------
+# fmt_duration_ms <milliseconds>
+# Compact wall-clock duration: "2h45m" / "45m" / "30s". Empty on bad input.
+# ---------------------------------------------------------------------------
+fmt_duration_ms() {
+    local ms="$1"
+    [[ "$ms" =~ ^[0-9]+$ ]] || return
+    local s=$(( ms / 1000 ))
+    local h=$(( s / 3600 ))
+    local m=$(( (s % 3600) / 60 ))
+    local sec=$(( s % 60 ))
+    if [ "$h" -gt 0 ]; then
+        printf '%dh%dm' "$h" "$m"
+    elif [ "$m" -gt 0 ]; then
+        printf '%dm' "$m"
     else
-        # After peak on weekday, or weekend
-        local days_until_peak
-        if [ "$is_weekend" -eq 1 ]; then
-            [ "$utc_day" -eq 6 ] && days_until_peak=2 || days_until_peak=1
-        else
-            # Weekday after peak: Fri→Mon=3, else tomorrow
-            [ "$utc_day" -eq 5 ] && days_until_peak=3 || days_until_peak=1
-        fi
-        # Calculate seconds to next peak start, convert to minutes
-        local now_epoch next_peak_epoch
-        now_epoch=$(date -u +%s)
-        next_peak_epoch=$(date -u -d "+${days_until_peak} days 12:00:00 UTC" +%s 2>/dev/null)
-        if [ -z "$next_peak_epoch" ]; then
-            # macOS fallback: compute manually
-            local today_midnight
-            today_midnight=$(date -u -d "today 00:00:00 UTC" +%s 2>/dev/null \
-                          || date -u -j -f "%Y%m%d%H%M%S" "$(date -u +%Y%m%d)000000" +%s 2>/dev/null)
-            next_peak_epoch=$(( today_midnight + days_until_peak * 86400 + 12 * 3600 ))
-        fi
-        minutes_until_flip=$(( (next_peak_epoch - now_epoch) / 60 ))
-        [ "$minutes_until_flip" -lt 0 ] && minutes_until_flip=0
-    fi
-
-    local countdown=""
-    local d=$(( minutes_until_flip / 1440 ))
-    local h=$(( (minutes_until_flip % 1440) / 60 ))
-    local m=$(( minutes_until_flip % 60 ))
-    [ "$d" -gt 0 ] && countdown="${d}d"
-    [ "$h" -gt 0 ] && countdown="${countdown}${h}h"
-    countdown="${countdown}${m}m"
-
-    if [ "$is_peak" -eq 1 ]; then
-        printf 'PEAK %s' "$countdown"
-    else
-        printf 'OFF_PEAK %s' "$countdown"
+        printf '%ds' "$sec"
     fi
 }
