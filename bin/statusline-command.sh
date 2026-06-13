@@ -2,15 +2,16 @@
 # statusline-command.sh — Claude Code statusline with ANSI colors, multi-line
 # layout, rate limit bars, burn-rate projection, session cost, and backup integration.
 #
-# Output (3-5 lines):
+# Output (up to 6 lines; rate, fill, and backup lines are each conditional):
 #   Line 1: Model (effort) [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: ctx: ●●●○… cache 78% | fill: tool out 33% · attached 29% · ...
+#   Line 2: ctx: ●●●○… cache 78%
 #   Line 3: 5h: ●●●●○○○○ 43% ->cap 1h12m | 7d: ●●○○○○○○ 22%
-#   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | 2h45m | +1739/-223
-#   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
+#   Line 4: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
+#   Line 5: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
+#   Line 6: (conditional) -> .claude/backups/3-backup-2026-06-02.md
 #
-# The 'fill:' segment on line 2 appears only once its node-written cache exists;
-# 'cache NN%' shows the prompt-cache hit-rate. The '->cap Xh Ym' marker on a rate
+# The 'fill:' line appears only once its node-written cache exists; 'cache NN%'
+# on the ctx line shows the prompt-cache hit-rate. The '->cap Xh Ym' marker on a rate
 # bar appears only when the current burn rate is on track to hit that window's
 # limit before it resets. The weekly reset carries a countdown so its true
 # distance is visible (the window resets at an account-assigned fixed time).
@@ -216,9 +217,9 @@ for (( i=0; i<${#line2_parts[@]}; i++ )); do
 done
 
 # ============================================================================
-# CONTEXT LINE (emitted as line 2): the 16-char context bar plus the per-category
-# "fill" breakdown of what is eating the window. The bar always shows; the
-# breakdown ("fill:") is appended only when its node-written cache exists.
+# CONTEXT LINE: the 16-char context bar plus the prompt-cache hit-rate. The
+# per-category "fill" breakdown is emitted SEPARATELY, on its own line below the
+# rate bars (see fill_line / the OUTPUT section).
 # ============================================================================
 ctx_bar=$(build_bar "$pct_used" 16)
 ctx_line="${C_WHITE}ctx:${C_RESET} ${ctx_bar}"
@@ -233,9 +234,12 @@ if [ "$cache_total" -gt 0 ]; then
     [[ "$cache_pct" =~ ^[0-9]+$ ]] && ctx_line="${ctx_line} ${C_DIM}cache${C_RESET} ${C_CYAN}${cache_pct}%${C_RESET}"
 fi
 
+# FILL LINE: the per-category breakdown of what is eating the live window, on its
+# own line (below the rate bars). Present only when the node-written cache exists.
+fill_line=""
 if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
     ctx_break=$(get_context_breakdown "$session_id" "$transcript_path")
-    [ -n "$ctx_break" ] && ctx_line="${ctx_line}${C_SEP}${C_WHITE}fill:${C_RESET} ${ctx_break}"
+    [ -n "$ctx_break" ] && fill_line="${C_WHITE}fill:${C_RESET} ${ctx_break}"
 fi
 
 # ============================================================================
@@ -369,9 +373,10 @@ fi
 # ============================================================================
 
 printf '%s' "$line1"
-[ -n "$ctx_line" ] && printf '\n%s' "$ctx_line"
-[ -n "$line2" ]    && printf '\n%s' "$line2"
-[ -n "$line3" ]    && printf '\n%s' "$line3"
-[ -n "$line4" ]    && printf '\n%s' "$line4"
+[ -n "$ctx_line" ]  && printf '\n%s' "$ctx_line"   # ctx bar + cache
+[ -n "$line2" ]     && printf '\n%s' "$line2"        # 5h / 7d rate bars
+[ -n "$fill_line" ] && printf '\n%s' "$fill_line"    # context-fill breakdown
+[ -n "$line3" ]     && printf '\n%s' "$line3"        # resets / cost / $hr / dur / lines
+[ -n "$line4" ]     && printf '\n%s' "$line4"        # backup path
 
 exit 0
