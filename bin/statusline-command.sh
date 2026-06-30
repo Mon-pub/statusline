@@ -4,7 +4,7 @@
 #
 # Output (up to 5 lines; fill and backup lines are each conditional):
 #   Line 1: Model (effort) [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: ctx: ●●●○… cache 78% | 5h: ●●●●○○○○ 43% ->cap 1h12m | 7d: ●●○○○○○○ 22%
+#   Line 2: ctx: ●●●○… cache 78% | 5h: ●●●●○○○○ 43% ->cap 1h12m (Tue 14:30) | 7d: ●●○○○○○○ 22%
 #   Line 3: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
 #   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
 #   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md

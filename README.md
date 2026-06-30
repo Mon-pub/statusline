@@ -13,15 +13,16 @@ resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1
 ## Features
 
 ### Display (bash)
+
 - **ANSI-colored multi-line output** — up to 5 lines (model; context bar + cache + rate-limit bars; context-fill breakdown; resets/cost; and an optional backup path), colored with RGB escape sequences. The fill and backup lines each appear only when their data exists.
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. Falls back to `settings.json` on older Claude Code.
 - **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly.
-- **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing *what* is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse runs in the background (node) and the statusline only reads a small cache, so long sessions never re-parse on every render. Hidden until data exists.
+- **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing _what_ is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse runs in the background (node) and the statusline only reads a small cache, so long sessions never re-parse on every render. Hidden until data exists.
 - **Cache hit-rate** — `cache 78%` on the context line: the share of input tokens served from the prompt cache (`cache_read / total input`), a high-signal proxy for how cost-efficient a long session is. Hidden until there's input (e.g. right after `/compact`).
 - **Free tokens until compact** — subtracts the 33k autocompact buffer to show real usable space.
 - **Rate-limit bars** — 5-hour and 7-day (weekly) windows with colored progress bars, driven by Claude Code's own `rate_limits.{five_hour,seven_day}.used_percentage`. Percentages are clamped to 0–100 so a transient bogus value Claude Code can emit before a window has data is ignored rather than rendered.
-- **Burn-rate projection** — when your current pace is on track to hit a window's limit *before* it resets, the bar gains a red `->cap 1h12m` marker (projected time to 100%). It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
+- **Burn-rate projection** — when your current pace is on track to hit a window's limit _before_ it resets, the bar gains a red `->cap 1h12m (Tue 14:30)` marker: the projected time to 100% and the wall-clock moment it lands. It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
 - **Friendly reset times** — `5:00pm (3h16m)` for the 5-hour window; the weekly reset shows day + time + countdown, e.g. `Tue, 5:35pm (3d2h)` (a calendar date replaces the weekday when it is more than 7 days out). The countdown makes the true distance to the weekly reset visible — it lands at an account-assigned fixed time, not always a fixed weekday.
 - **Session cost** — headline uses Claude Code's authoritative `cost.total_cost_usd` when present (the transcript-JSONL estimate supplies the dim `in/out` split). Falls back to the per-model JSONL estimate on older Claude Code. Survives `/resume`.
 - **Cost burn rate** — `$/hr` spend velocity (`total_cost_usd` ÷ session duration), shown dim next to the cost (e.g. `$7.03/h`). Hidden until both the cost and a positive duration are known.
@@ -29,12 +30,14 @@ resets 7:52pm (4h0m) | resets Tue, 5:52pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1
 - **Lines changed** — `+added/-removed` diff stat for the session, from `cost.total_lines_*`.
 
 ### Backup system (Node.js)
+
 - **Auto backup on thresholds** — first backup at 50k tokens, then every 10k. Percentage thresholds at 30%, 15%, 5% free as safety net.
 - **PreCompact hook** — captures context before Claude Code compacts, so you never lose work.
 - **Backup compaction** — old backups (>14 days) are summarized by Claude CLI into archived summaries, preserving session IDs for `--resume`.
 - **Backup path display** — line 4 shows the current backup file path when one exists.
 
 ### Companion tools
+
 - **`credit-project.sh`** — totals cost across every session in a project directory, with per-model breakdown.
 
 ## Requirements
@@ -51,11 +54,13 @@ cd claude-statusline
 ```
 
 Flags:
+
 - `--no-write` — copy scripts only, print settings.json snippets
 - `--force` — overwrite existing statusLine without prompting
 - `--no-hooks` — skip PreCompact hook installation
 
 What it does:
+
 1. Copies `bin/*.sh` to `~/.claude/`
 2. Copies `node/*.mjs` to `~/.claude/statusline-node/`
 3. Merges `statusLine` entry into `~/.claude/settings.json`
@@ -79,13 +84,17 @@ Then add to `~/.claude/settings.json`:
     "command": "bash ~/.claude/statusline-command.sh"
   },
   "hooks": {
-    "PreCompact": [{
-      "hooks": [{
-        "type": "command",
-        "command": "STATUSLINE_PROJECT_DIR=\"$CLAUDE_PROJECT_DIR\" node ~/.claude/statusline-node/conv-backup.mjs",
-        "async": true
-      }]
-    }]
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "STATUSLINE_PROJECT_DIR=\"$CLAUDE_PROJECT_DIR\" node ~/.claude/statusline-node/conv-backup.mjs",
+            "async": true
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -155,7 +164,7 @@ Date filtering uses file modification time — fast, no JSONL parsing. Scans all
 Per 1M tokens. Sourced from [anthropic.com/pricing](https://www.anthropic.com/pricing).
 
 | Family | Input | Cache read | Cache create | Output |
-|--------|-------|------------|--------------|--------|
+| ------ | ----- | ---------- | ------------ | ------ |
 | Opus   | $5.00 | $0.50      | $6.25        | $25.00 |
 | Sonnet | $3.00 | $0.30      | $3.75        | $15.00 |
 | Haiku  | $1.00 | $0.10      | $1.25        | $5.00  |
@@ -171,6 +180,7 @@ Edit `set_rates()` in `bin/credit-lib.sh` to update pricing.
 ## Configuration
 
 Environment variables:
+
 - `CLAUDE_CONFIG_DIR` — overrides `~/.claude` for script + settings location
 - `XDG_CACHE_HOME` — overrides `~/.cache` for credit cache
 - `STATUSLINE_PROJECT_DIR` — project root for backup files (auto-set by hooks)

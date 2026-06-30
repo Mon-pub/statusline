@@ -161,12 +161,13 @@ fmt_reset_friendly() {
 # ---------------------------------------------------------------------------
 # project_cap <used_pct> <resets_at_epoch> <window_len_s>
 # Linear burn-rate projection for a rate-limit window. Echoes the time until the
-# limit is projected to hit 100% (e.g. "1h12m") ONLY when that is sooner than the
-# window resets — i.e. when you are on track to be capped before relief. Echoes
-# nothing when you will not hit the cap first, or when inputs are unusable.
-# The window is treated as the <window_len_s> seconds ending at <resets_at>, so
-# elapsed = window - (resets_at - now); this holds for the rolling 5h window and
-# is a good approximation for the trailing-7d weekly window.
+# limit is projected to hit 100% AND the wall-clock moment it lands, e.g.
+# "1h12m (Tue 14:30)" — ONLY when that is sooner than the window resets, i.e.
+# when you are on track to be capped before relief. Echoes nothing when you will
+# not hit the cap first, or when inputs are unusable. The window is treated as
+# the <window_len_s> seconds ending at <resets_at>, so elapsed = window -
+# (resets_at - now); this holds for the rolling 5h window and is a good
+# approximation for the trailing-7d weekly window.
 # ---------------------------------------------------------------------------
 project_cap() {
     local used="$1" resets_at="$2" window="$3"
@@ -180,17 +181,37 @@ project_cap() {
     [ "$remaining" -ge "$window" ] && return    # window not started yet / skew
     elapsed=$(( window - remaining ))
     [ "$elapsed" -le 0 ] && return
-    awk -v u="$used" -v el="$elapsed" -v rem="$remaining" 'BEGIN {
+
+    # Seconds until the window reaches 100% at the current linear burn rate, but
+    # only if that is sooner than the window resets (else nothing to warn about).
+    local secs
+    secs=$(awk -v u="$used" -v el="$elapsed" -v rem="$remaining" 'BEGIN {
         if (u <= 0 || u >= 100) exit            # nothing to project
         rate = u / el                            # percent consumed per second
         if (rate <= 0) exit
         s = (100 - u) / rate                     # seconds to reach 100%
         if (s >= rem) exit                       # wont hit cap before reset
-        s = int(s)
-        h = int(s / 3600); m = int((s % 3600) / 60)
-        if (h > 0) printf "%dh%dm", h, m
-        else printf "%dm", (m < 1 ? 1 : m)
-    }'
+        printf "%d", int(s)
+    }')
+    [[ "$secs" =~ ^[0-9]+$ ]] || return
+
+    local h=$(( secs / 3600 )) m=$(( (secs % 3600) / 60 )) dur
+    if [ "$h" -gt 0 ]; then
+        dur="${h}h${m}m"
+    else
+        dur="$(( m < 1 ? 1 : m ))m"
+    fi
+
+    # Wall-clock moment the cap is projected to hit (weekday + 24h time).
+    local cap_epoch when
+    cap_epoch=$(( now + secs ))
+    when=$(date -d "@${cap_epoch}" "+%a %H:%M" 2>/dev/null \
+        || date -r  "$cap_epoch"  "+%a %H:%M" 2>/dev/null)
+    if [ -n "$when" ]; then
+        printf '%s (%s)' "$dur" "$when"
+    else
+        printf '%s' "$dur"
+    fi
 }
 
 # ---------------------------------------------------------------------------
