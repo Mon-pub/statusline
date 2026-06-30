@@ -117,31 +117,6 @@ week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty | 
 # seven_day. A per-model weekly bucket exists only on the undocumented authed
 # OAuth usage endpoint, out of scope for a pure-stdin, never-break statusline.
 
-# DEBUG (opt-in, off by default): when the marker file exists, append a snapshot
-# of the live rate_limits to a log — but only when a reset target (resets_at)
-# changes, so the log stays tiny and shows exactly when/where each window resets.
-# This is the ground truth for diagnosing the real weekly-reset cadence. Touch
-# the marker to enable, rm it to stop. Wrapped so it can never break the render.
-_rl_cfg="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
-if [ -f "${_rl_cfg}/.statusline-debug-ratelimits" ]; then
-    {
-        _rl_sig="${five_reset:-NA}:${week_reset:-NA}"
-        _rl_sig_file="${_rl_cfg}/.statusline-ratelimits.sig"
-        _rl_last=$(cat "$_rl_sig_file" 2>/dev/null || true)
-        if [ "$_rl_sig" != "$_rl_last" ]; then
-            _rl_raw=$(echo "$input" | jq -c '.rate_limits // {}' 2>/dev/null)
-            _rl_5dec=$([ -n "$five_reset" ] && fmt_reset_friendly "$five_reset" "datetime")
-            _rl_7dec=$([ -n "$week_reset" ] && fmt_reset_friendly "$week_reset" "datetime")
-            printf '%s\t5h=%s%% resets@%s (%s)\t7d=%s%% resets@%s (%s)\traw=%s\n' \
-                "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
-                "${five_pct:-NA}" "${five_reset:-NA}" "${_rl_5dec:-NA}" \
-                "${week_pct:-NA}" "${week_reset:-NA}" "${_rl_7dec:-NA}" \
-                "${_rl_raw:-NA}" >> "${_rl_cfg}/statusline-ratelimits.log"
-            printf '%s' "$_rl_sig" > "$_rl_sig_file"
-        fi
-    } 2>/dev/null
-fi
-
 # Session info
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 session_id=$(echo "$input"      | jq -r '.session_id      // empty')
