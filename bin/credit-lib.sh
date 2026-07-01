@@ -1,12 +1,13 @@
 #!/bin/bash
 # credit-lib.sh — shared pricing logic for claude-statusline and credit-project.
 #
-# Pricing (per 1M tokens):
-#   Opus   (opus-*):    $5.00  in / $0.50 cache-read / $6.25  cache-create / $25.00 out
-#     ↑ Claude Opus 4.7 rates (confirmed 2026-04-22 by user from openrouter.ai/anthropic/claude-opus-4.7
-#       and https://www.anthropic.com/pricing — Opus 4.7 is $5/M input, $25/M output,
-#       NOT the legacy Opus 3/4/4.1 rates of $15/$75 that were here before).
+# Pricing (per 1M tokens; verified 2026-06-30 from https://platform.claude.com/docs/en/about-claude/pricing).
+# Cache multipliers vs base input: read 0.1x, 5-minute write 1.25x, 1-hour write 2x.
+#   Fable  (fable-*):   $10.00 in / $1.00 cache-read / $12.50 cache-create / $50.00 out (also mythos-*)
+#   Opus   (opus-*):    $5.00  in / $0.50 cache-read / $6.25  cache-create / $25.00 out (Opus 4.x)
 #   Sonnet (sonnet-*):  $3.00  in / $0.30 cache-read / $3.75  cache-create / $15.00 out
+#     ↑ standard rate (Sonnet 4.5/4.6 and Sonnet 5 after 2026-08-31). Sonnet 5 has an
+#       introductory $2/$10 rate through 2026-08-31; the live native cost field applies it.
 #   Haiku  (haiku-*):   $1.00  in / $0.10 cache-read / $1.25  cache-create / $5.00  out
 #   Unknown families:   Opus pricing (user preference; labelled as the real family name)
 #
@@ -28,7 +29,8 @@
 #     claude-haiku-4-5-20251001 → haiku
 #     claude-3-5-sonnet-20241022 → sonnet   (3 and 5 are numeric; sonnet is first non-numeric)
 #     claude-3-opus-20240229    → opus      (3 is numeric; opus is first non-numeric)
-#     claude-mythos-5           → mythos    (new unknown family; priced at Opus rates)
+#     claude-fable-5            → fable     (priced at Fable rates; also claude-mythos-5 → mythos)
+#     claude-zephyr-5           → zephyr    (new unknown family; priced at Opus rates)
 #     (empty / no model field)  → unknown
 #
 # Functions:
@@ -88,7 +90,7 @@ _jsonl_to_tsv() {
 #
 # set_rates(family):
 #   Populates ri/rr/rc/rc1h/ro with per-1M-token rates for the family.
-#   Known families: opus, sonnet, haiku.
+#   Known families: fable, mythos, opus, sonnet, haiku.
 #   Unknown families: Opus rates (user preference for unknown/pre-release work).
 #   Cache-write tiers (Anthropic): 5-minute TTL = 1.25x base input (rc),
 #   1-hour TTL = 2x base input (rc1h). The JSONL carries them split under
@@ -113,13 +115,24 @@ _AWK_RATE_FN='
 
     function set_rates(family) {
         if (family == "haiku") {
-            ri=1.00;  rr=0.10;  rc=1.25;  rc1h=2.50;  ro=5.00
+            # Claude Haiku 4.5: $1/M in, $5/M out. read 0.1x, 5m 1.25x, 1h 2x.
+            ri=1.00;  rr=0.10;  rc=1.25;  rc1h=2.00;  ro=5.00
         } else if (family == "sonnet") {
-            ri=3.00;  rr=0.30;  rc=3.75;  rc1h=7.50;  ro=15.00
+            # Claude Sonnet 5 / 4.x: $3/M in, $15/M out (standard). Sonnet 5 has an
+            # introductory $2/$10 rate through 2026-08-31, but the "sonnet" family
+            # also matches Sonnet 4.5/4.6 (always $3/$15), so we use the stable
+            # standard rate here; the live native cost field bills the intro exactly.
+            ri=3.00;  rr=0.30;  rc=3.75;  rc1h=6.00;  ro=15.00
         } else if (family == "opus") {
-            # Claude Opus 4.x: $5/M in, $25/M out. Cache read=0.10x=$0.50,
-            # 5m write=1.25x=$6.25, 1h write=2.00x=$10.00 (Anthropic multipliers).
+            # Claude Opus 4.x: $5/M in, $25/M out. read 0.1x=$0.50,
+            # 5m write 1.25x=$6.25, 1h write 2x=$10.00 (Anthropic multipliers).
             ri=5.00;  rr=0.50;  rc=6.25;  rc1h=10.00;  ro=25.00
+        } else if (family == "fable" || family == "mythos") {
+            # Claude Fable 5 / Mythos 5: $10/M in, $50/M out. read 0.1x=$1.00,
+            # 5m write 1.25x=$12.50, 1h write 2x=$20.00. The most capable widely
+            # released tier — priced well above Opus, so it needs its own branch
+            # rather than the Opus default below.
+            ri=10.00;  rr=1.00;  rc=12.50;  rc1h=20.00;  ro=50.00
         } else {
             # Unknown/future family: default to Opus rates (user preference).
             # The bucket label will be the real family name, not "opus".

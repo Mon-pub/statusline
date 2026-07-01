@@ -159,17 +159,18 @@ MODELS:
 
 Date filtering uses file modification time — fast, no JSONL parsing. Scans all projects under `~/.claude/projects/` by default.
 
-## Pricing (as of 2026-04-22)
+## Pricing (as of 2026-06-30)
 
-Per 1M tokens. Sourced from [anthropic.com/pricing](https://www.anthropic.com/pricing).
+Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache create" is the 5-minute write (1.25× input); the 1-hour write is 2× input (`$20.00`/`$10.00`/`$6.00`/`$2.00` for Fable/Opus/Sonnet/Haiku).
 
-| Family | Input | Cache read | Cache create | Output |
-| ------ | ----- | ---------- | ------------ | ------ |
-| Opus   | $5.00 | $0.50      | $6.25        | $25.00 |
-| Sonnet | $3.00 | $0.30      | $3.75        | $15.00 |
-| Haiku  | $1.00 | $0.10      | $1.25        | $5.00  |
+| Family | Input  | Cache read | Cache create | Output |
+| ------ | ------ | ---------- | ------------ | ------ |
+| Fable  | $10.00 | $1.00      | $12.50       | $50.00 |
+| Opus   | $5.00  | $0.50      | $6.25        | $25.00 |
+| Sonnet | $3.00  | $0.30      | $3.75        | $15.00 |
+| Haiku  | $1.00  | $0.10      | $1.25        | $5.00  |
 
-Edit `set_rates()` in `bin/credit-lib.sh` to update pricing.
+Matched by model family (`fable`/`opus`/`sonnet`/`haiku`; `mythos` shares Fable's rates); unknown families fall back to Opus rates. Claude Sonnet 5 has an introductory $2/$10 rate through 2026-08-31 — the live headline uses Claude Code's own `cost.total_cost_usd` and bills that exactly; the family table above is the stable standard rate used only for the offline estimate. Edit `set_rates()` in `bin/credit-lib.sh` to update pricing.
 
 ## Architecture
 
