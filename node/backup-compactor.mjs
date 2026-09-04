@@ -34,28 +34,28 @@ const BATCH_SIZE = 7;
 const MAX_BATCHES = 5;
 const INTER_BATCH_DELAY_MS = 5000;
 const CONTENT_CAP = 4000; // chars per backup sent to summarizer
-const LOCK_PATH = join(homedir(), ".cache", "claude-statusline", "compactor.lock");
+const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "claude-statusline");
+const LOCK_PATH = join(CACHE_DIR, "compactor.lock");
+// Summariser model: cheap, current. Sonnet 5 is $2/$10 per MTok (2026-09).
+const SUMMARY_MODEL = process.env.STATUSLINE_SUMMARY_MODEL || "claude-sonnet-5";
 
 // ---------------------------------------------------------------------------
 // Logging (reuse format from backup-core)
 // ---------------------------------------------------------------------------
 
-const LOG_PATH = join(
-  process.env.STATUSLINE_LOG_DIR || join(homedir(), ".cache", "claude-statusline"),
-  "backup.log"
-);
+const LOG_PATH = join(process.env.STATUSLINE_LOG_DIR || CACHE_DIR, "backup.log");
 
 function log(msg) {
   try {
     const dir = dirname(LOG_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     const ts = new Date().toISOString();
     let lines = [];
     if (existsSync(LOG_PATH)) {
       lines = readFileSync(LOG_PATH, "utf-8").split("\n").filter(Boolean).slice(-99);
     }
     lines.push(`[${ts}] compactor: ${msg}`);
-    writeFileSync(LOG_PATH, lines.join("\n") + "\n");
+    writeFileSync(LOG_PATH, lines.join("\n") + "\n", { mode: 0o600 });
   } catch { /* silent */ }
 }
 
@@ -66,7 +66,7 @@ function log(msg) {
 function takeLock() {
   try {
     const dir = dirname(LOCK_PATH);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (existsSync(LOCK_PATH)) {
       const age = Date.now() - statSync(LOCK_PATH).mtimeMs;
       if (age < 600_000) {
@@ -74,7 +74,7 @@ function takeLock() {
         return false;
       }
     }
-    writeFileSync(LOCK_PATH, new Date().toISOString());
+    writeFileSync(LOCK_PATH, new Date().toISOString(), { mode: 0o600 });
     return true;
   } catch (e) {
     log(`Lock error: ${e.message}`);
@@ -96,10 +96,12 @@ function backupNum(filename) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Date from the filename; falls back to the file's mtime for legacy names
+// such as "2-backup-24th-May-2026-6-53pm.md" so they still age out.
 function backupDate(filename) {
   const m = filename.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})\.md$/);
-  if (!m) return null;
-  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  try { return statSync(join(BACKUP_DIR, filename)).mtime; } catch { return null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +167,12 @@ function buildPrompt(batch, contents) {
   return prompt;
 }
 
-function summarizeWithClaude(prompt) {
-  log(`Calling claude -p (${prompt.length} chars)`);
-
-  const res = spawnSync("claude", ["-p", "--model", "claude-sonnet-4-6"], {
+// `--bare` skips hooks/plugins/LSP (so our own PreCompact/SessionEnd hooks can
+// never fire inside the summariser) and `--no-session-persistence` keeps the
+// summariser from leaving a transcript of its own in the project. Older CLIs
+// without `--bare` get one retry without it.
+function runClaude(prompt, extraFlags) {
+  return spawnSync("claude", ["-p", "--model", SUMMARY_MODEL, "--no-session-persistence", ...extraFlags], {
     input: prompt,
     encoding: "utf-8",
     timeout: 180_000,
@@ -176,6 +180,16 @@ function summarizeWithClaude(prompt) {
     cwd: PROJECT_ROOT,
     windowsHide: true,
   });
+}
+
+function summarizeWithClaude(prompt) {
+  log(`Calling claude -p --model ${SUMMARY_MODEL} (${prompt.length} chars)`);
+
+  let res = runClaude(prompt, ["--bare"]);
+  if (!res.error && res.status !== 0 && /unknown option.*--bare/i.test(res.stderr || "")) {
+    log("CLI lacks --bare, retrying without it");
+    res = runClaude(prompt, []);
+  }
 
   if (res.error) { log(`CLI error: ${res.error.message}`); return null; }
   if (res.status !== 0) { log(`CLI exit ${res.status}: ${(res.stderr || "").slice(0, 200)}`); return null; }
@@ -251,7 +265,7 @@ async function main() {
     const toProcess = batches.slice(0, MAX_BATCHES);
     log(`${toProcess.length} of ${batches.length} batches`);
 
-    mkdirSync(ARCHIVE_DIR, { recursive: true });
+    mkdirSync(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
     let processed = 0;
 
     for (let b = 0; b < toProcess.length; b++) {
@@ -274,7 +288,7 @@ async function main() {
       const outFile = `summary-${firstN}-to-${lastN}.md`;
       const outContent = buildSummaryFile(batch, contents, summary);
 
-      writeFileSync(join(ARCHIVE_DIR, outFile), outContent);
+      writeFileSync(join(ARCHIVE_DIR, outFile), outContent, { mode: 0o600 });
       log(`Wrote archived/${outFile}`);
 
       // Remove originals

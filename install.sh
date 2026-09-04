@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # install.sh — install statusline + credit + backup scripts into $CLAUDE_CONFIG_DIR
-# and wire the statusLine key + PreCompact hook into settings.json.
+# and wire the statusLine key + PreCompact/SessionEnd hooks into settings.json.
 #
 # Usage:  ./install.sh                # interactive — installs everything
 #         ./install.sh --no-write     # skip settings.json edit, print snippets
 #         ./install.sh --force        # overwrite existing statusLine without prompting
-#         ./install.sh --no-hooks     # skip PreCompact hook installation
+#         ./install.sh --no-hooks     # skip PreCompact/SessionEnd hook installation
 #
 # Override target dir:  CLAUDE_CONFIG_DIR=/path/to/claude ./install.sh
 
@@ -90,13 +90,19 @@ done
 # --- Settings.json: statusLine entry ---
 SETTINGS="${TARGET}/settings.json"
 DESIRED_CMD="bash ${TARGET}/statusline-command.sh"
-DESIRED_JSON=$(jq -nc --arg cmd "$DESIRED_CMD" '{type:"command", command:$cmd}')
+# refreshInterval re-runs the command every 60s while idle so the countdowns
+# (rate-limit resets, cache TTL, ->cap) keep ticking between events.
+REFRESH_S=60
+DESIRED_JSON=$(jq -nc --arg cmd "$DESIRED_CMD" --argjson r "$REFRESH_S" \
+    '{type:"command", command:$cmd, refreshInterval:$r}')
+HOOK_CMD="STATUSLINE_PROJECT_DIR=\"\$CLAUDE_PROJECT_DIR\" node ${NODE_TARGET}/conv-backup.mjs"
 
 snippet_statusline() {
     cat <<EOF
   "statusLine": {
     "type": "command",
-    "command": "${DESIRED_CMD}"
+    "command": "${DESIRED_CMD}",
+    "refreshInterval": ${REFRESH_S}
   }
 EOF
 }
@@ -107,8 +113,15 @@ snippet_hook() {
     "PreCompact": [{
       "hooks": [{
         "type": "command",
-        "command": "STATUSLINE_PROJECT_DIR=\"\$CLAUDE_PROJECT_DIR\" node ${NODE_TARGET}/conv-backup.mjs",
+        "command": "${HOOK_CMD}",
         "async": true
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "${HOOK_CMD}",
+        "timeout": 20
       }]
     }]
   }
@@ -189,25 +202,30 @@ else
     atomic_jq --argjson sl "$DESIRED_JSON" '.statusLine = $sl' && echo "statusLine added."
 fi
 
-# --- Merge PreCompact hook (idempotent rewrite) ---
+# --- Merge PreCompact + SessionEnd hooks (idempotent rewrite) ---
 if [ "$INSTALL_HOOKS" -eq 1 ]; then
     echo ""
-    echo "=== PreCompact hook ==="
-    HOOK_CMD="STATUSLINE_PROJECT_DIR=\"\$CLAUDE_PROJECT_DIR\" node ${NODE_TARGET}/conv-backup.mjs"
-    HOOK_JSON=$(jq -nc --arg cmd "$HOOK_CMD" '[{hooks:[{type:"command", command:$cmd, async:true}]}]')
+    echo "=== PreCompact + SessionEnd hooks ==="
+    # PreCompact is async (fire-and-forget, never delays compaction). SessionEnd
+    # is synchronous with a short timeout: an async hook could be torn down with
+    # the exiting session before the final backup is written.
+    PRE_JSON=$(jq -nc --arg cmd "$HOOK_CMD" '[{hooks:[{type:"command", command:$cmd, async:true}]}]')
+    END_JSON=$(jq -nc --arg cmd "$HOOK_CMD" '[{hooks:[{type:"command", command:$cmd, timeout:20}]}]')
 
-    # Drop any prior PreCompact entry referencing conv-backup.mjs (so a changed
-    # install path — which CC dedups by exact string and would NOT collapse —
-    # can't leave a duplicate), tolerate a non-array .hooks.PreCompact, then
-    # append the single canonical entry. One atomic pass.
-    if atomic_jq --argjson hk "$HOOK_JSON" '
+    # For each event: drop any prior entry referencing conv-backup.mjs (so a
+    # changed install path — which CC dedups by exact string and would NOT
+    # collapse — can't leave a duplicate), tolerate a non-array value, then
+    # append the single canonical entry. One atomic pass for both events.
+    # shellcheck disable=SC2016
+    if atomic_jq --argjson pre "$PRE_JSON" --argjson end "$END_JSON" '
+        def ours: ((.hooks // []) | map(.command // "") | any(test("conv-backup\\.mjs")));
+        def merge(cur; add): ((cur // []) | if type == "array" then . else [] end
+                              | map(select(ours | not))) + add;
         .hooks //= {} |
-        .hooks.PreCompact = (
-            ((.hooks.PreCompact // []) | if type == "array" then . else [] end)
-            | map(select(((.hooks // []) | map(.command // "") | any(test("conv-backup\\.mjs"))) | not))
-        ) + $hk
+        .hooks.PreCompact = merge(.hooks.PreCompact; $pre) |
+        .hooks.SessionEnd = merge(.hooks.SessionEnd; $end)
     '; then
-        echo "PreCompact hook installed (idempotent)."
+        echo "PreCompact + SessionEnd hooks installed (idempotent)."
     fi
 fi
 

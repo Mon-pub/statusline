@@ -22,8 +22,10 @@ import { spawn } from "child_process";
 
 const PROJECT_ROOT = process.env.STATUSLINE_PROJECT_DIR || process.cwd();
 const BACKUP_DIR = join(PROJECT_ROOT, ".claude", "backups");
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 const LOG_PATH = join(
-  process.env.STATUSLINE_LOG_DIR || join(homedir(), ".cache", "claude-statusline"),
+  process.env.STATUSLINE_LOG_DIR
+    || join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "claude-statusline"),
   "backup.log"
 );
 
@@ -133,7 +135,7 @@ function acquireLock(sessionId) {
       const age = Date.now() - statSync(lf).mtimeMs;
       if (age < LOCK_TTL_MS) return false;
     }
-    writeFileSync(lf, String(Date.now()));
+    writeFileSync(lf, String(Date.now()), { mode: 0o600 });
     return true;
   } catch { return true; } // proceed on lock errors
 }
@@ -143,7 +145,17 @@ function acquireLock(sessionId) {
 // ---------------------------------------------------------------------------
 
 export function shouldBackup(totalTokens, freePct, state) {
-  const { prevTokens = 0, prevFreePct = 100 } = state;
+  let { prevTokens = 0, prevFreePct = 100 } = state;
+  if (!Number.isFinite(totalTokens) || totalTokens < 0) return null;
+  if (!Number.isFinite(freePct)) freePct = prevFreePct;
+
+  // A live count well below the last recorded one means the context was
+  // compacted or the session restarted: re-arm the thresholds so the climb
+  // back up produces backups again instead of waiting for prev + 10k.
+  if (totalTokens + BACKUP_INTERVAL_TOKENS < prevTokens) {
+    prevTokens = 0;
+    prevFreePct = 100;
+  }
 
   // Token-based: first at 50k, then every 10k
   if (totalTokens >= FIRST_BACKUP_TOKENS) {
@@ -198,9 +210,16 @@ function parseTranscript(jsonlPath) {
         result.endTime = entry.timestamp;
       }
 
-      // User messages (skip tool results, system, short fragments)
-      if (entry.type === "user" && typeof entry.message?.content === "string") {
-        const text = entry.message.content.trim();
+      // User messages (skip tool results, meta/system, short fragments).
+      // Content is a string for typed prompts, or an array of blocks when the
+      // prompt carried attachments/images — take the text blocks only.
+      if (entry.type === "user" && !entry.isMeta && entry.message?.content != null) {
+        const c = entry.message.content;
+        const text = (typeof c === "string"
+          ? c
+          : Array.isArray(c)
+            ? c.filter(bk => bk && bk.type === "text" && typeof bk.text === "string").map(bk => bk.text).join("\n")
+            : "").trim();
         if (text.length >= 10
           && !text.startsWith("[{")
           && !text.startsWith('{"tool_use_id"')
@@ -375,7 +394,7 @@ function writeBackup(markdown, existingPath) {
 
 export function findTranscript(sessionId) {
   try {
-    const base = join(homedir(), ".claude", "projects");
+    const base = join(CLAUDE_DIR, "projects");
     if (!existsSync(base)) return null;
     for (const dir of readdirSync(base)) {
       const candidate = join(base, dir, `${sessionId}.jsonl`);
@@ -408,7 +427,7 @@ function maybeSpawnCompactor() {
     if (oldCount < 7) return;
 
     // Global compactor lock
-    const gLock = join(homedir(), ".cache", "claude-statusline", "compactor.lock");
+    const gLock = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "claude-statusline", "compactor.lock");
     if (existsSync(gLock) && Date.now() - statSync(gLock).mtimeMs < 600_000) {
       appendLog("Compactor already running, skip");
       return;
@@ -439,7 +458,10 @@ function maybeSpawnCompactor() {
 // Main entry point — run a backup
 // ---------------------------------------------------------------------------
 
-export function runBackup(sessionId, trigger, transcriptPath, freePct) {
+// opts.totalTokens — live token count to record as the new threshold baseline
+// opts.rearm       — reset the baseline (after a compaction) so growth from the
+//                    compacted size triggers fresh backups
+export function runBackup(sessionId, trigger, transcriptPath, freePct, opts = {}) {
   if (process.env.STATUSLINE_SPAWNED_BY === "backup-core") return null;
 
   appendLog(`Backup requested: session=${sessionId?.slice(0, 8)}… trigger=${trigger}`);
@@ -454,7 +476,7 @@ export function runBackup(sessionId, trigger, transcriptPath, freePct) {
   // Release the lock as soon as this run finishes so the next backup isn't
   // blocked for the full TTL; the TTL stays only as a crash safety net.
   try {
-    const jsonlPath = transcriptPath || findTranscript(sessionId);
+    const jsonlPath = (transcriptPath && existsSync(transcriptPath)) ? transcriptPath : findTranscript(sessionId);
     if (!jsonlPath) {
       appendLog("No transcript found");
       return null;
@@ -471,8 +493,15 @@ export function runBackup(sessionId, trigger, transcriptPath, freePct) {
     const rel = writeBackup(md, state.backupPath);
 
     state.backupPath = rel;
-    state.prevTokens = state._pendingTokens ?? state.prevTokens;
-    state.prevFreePct = state._pendingFreePct ?? state.prevFreePct;
+    if (opts.rearm) {
+      state.prevTokens = 0;
+      state.prevFreePct = 100;
+    } else {
+      if (Number.isFinite(opts.totalTokens)) state.prevTokens = opts.totalTokens;
+      if (Number.isFinite(freePct)) state.prevFreePct = freePct;
+    }
+    delete state._pendingTokens;
+    delete state._pendingFreePct;
     saveState(sessionId, state);
 
     maybeSpawnCompactor();
