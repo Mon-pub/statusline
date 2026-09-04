@@ -18,17 +18,20 @@ thing each.
 
 | Input | Source | Treatment |
 |-------|--------|-----------|
-| Statusline stdin JSON | Claude Code | Numeric fields are coerced to integers at the `jq` boundary before any `bash` arithmetic; rate-limit percentages are additionally range-checked to `0–100` so a malformed or out-of-range value is dropped rather than rendered; printed strings (`model.display_name`, `output_style.name`) are stripped of control bytes; `session_id` is reduced to `[A-Za-z0-9-]` before being used in any file path. |
+| Statusline stdin JSON | Claude Code | All fields are extracted in a single `jq` pass that is the trust boundary: numeric fields are coerced to integers/numbers before any `bash` arithmetic (a string in a numeric slot becomes `0` or is dropped); 5h/7d percentages are range-checked to `0–100`; every printed string (`model.display_name`, `effort.level`, `output_style.name`, `prompt_cache.ttl`, `agent.name`, worktree names, paths) has C0/C1 control bytes stripped inside `jq`; `session_id` is reduced to `[A-Za-z0-9-]` before being used in any file path. The git branch (from `git symbolic-ref`) is control-stripped too. Absent fields are emitted as empty strings so array positions can never shift. |
 | Transcript JSONL | On disk (`~/.claude/projects/...`) | Parsed read-only for token/cost accounting, backup summaries, and the context-fill breakdown. Content is never `eval`'d. |
-| Delta / cache files | `$XDG_CACHE_HOME/claude-statusline` | Values are validated as integers before arithmetic. The breakdown cache (`breakdown-<id>.json`) is written `0600` via a temp-file + atomic rename and read back through `jq`; its numeric fields are re-guarded before use. |
-| Backup markdown | `.claude/backups/` | Session ids read back from backups are re-validated against `^[A-Za-z0-9-]{1,64}$` before being placed in any `claude --resume` command string. |
+| Delta / cache files | `$XDG_CACHE_HOME/claude-statusline` | Values are validated as integers/decimals before arithmetic or printing. The breakdown cache (`breakdown-<id>.json`) is written `0600` via a temp-file + atomic rename and read back through `jq`; its numeric fields are re-guarded before use. Files older than 30 days are purged daily (only the statusline's own `breakdown-*`/`delta-*`/`credit-*` patterns, never the directory). |
+| Backup markdown | `.claude/backups/` | Session ids read back from backups are re-validated against `^[A-Za-z0-9-]{1,64}$` before being placed in any `claude --resume` command string. The backup path read from the per-session state file is re-matched against `^\.claude/backups/[A-Za-z0-9._-]+\.md$` before it is printed. |
 
 ### Network egress
 
 - The **statusline** and **backup capture** make **no network calls**.
 - The **backup compactor** (`node/backup-compactor.mjs`) invokes the `claude` CLI
-  (`claude -p`) to summarize backups older than 14 days. This sends summaries of
-  your own backup files to the Anthropic API. It is the only egress surface.
+  (`claude -p --bare --no-session-persistence`) to summarize backups older than
+  14 days. This sends summaries of your own backup files to the Anthropic API.
+  It is the only egress surface. `--bare` skips hooks and plugins inside the
+  summariser so no third-party hook sees the backup text; the
+  `STATUSLINE_SPAWNED_BY` guard additionally stops our own hooks from recursing.
   Disable it by deleting `node/backup-compactor.mjs` or removing the
   `maybeSpawnCompactor()` call in `node/backup-core.mjs`.
 
@@ -43,10 +46,13 @@ thing each.
 
 ### Hooks
 
-The installer writes a `PreCompact` hook into `settings.json`. The hook always
-exits `0` and writes only to **stderr**, so it can never emit a
+The installer writes a `PreCompact` hook (async) and a `SessionEnd` hook
+(synchronous, 20 s timeout) into `settings.json`; both run the same script. The
+hook always exits `0` and writes only to **stderr**, so it can never emit a
 `{"decision":"block"}` object that would prevent compaction. The installer is
-idempotent: re-running it never duplicates the hook or the `statusLine` entry,
+idempotent: re-running it never duplicates a hook or the `statusLine` entry
+(hooks are matched on the `conv-backup.mjs` command, so a changed install path
+replaces rather than duplicates), leaves hooks it did not write untouched,
 edits `settings.json` atomically (temp file + validate + rename), keeps a
 pristine `.bak`, and enforces `0600` on the result.
 
@@ -58,7 +64,14 @@ pristine `.bak`, and enforces `0600` on the result.
 - If you do not want any backups on disk, install with `--no-hooks` and the
   statusline still works; the display layer never writes conversation content.
 
+## Verification
+
+`bash tests/run.sh` exercises the trust boundary with hostile stdin (terminal
+escapes in `display_name`, command substitutions in numeric slots, path
+traversal in `session_id`, non-JSON input) and asserts nothing is evaluated or
+echoed raw. Run it after any change to `bin/` or `node/`.
+
 ## Supported versions
 
-The project tracks the latest Claude Code release. Fixes land on `main`; there
-are no long-term support branches.
+The project tracks the latest Claude Code release (currently 2.1.261). Fixes
+land on `main`; there are no long-term support branches.

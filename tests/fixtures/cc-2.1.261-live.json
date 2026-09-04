@@ -1,0 +1,78 @@
+{
+  "session_id": "fixture-live",
+  "transcript_path": "/nonexistent/fixture.jsonl",
+  "cwd": "/nonexistent",
+  "effort": {
+    "level": "high"
+  },
+  "session_name": "fixture",
+  "model": {
+    "id": "claude-fable-5-1",
+    "display_name": "Fable 5.1"
+  },
+  "workspace": {
+    "current_dir": "/nonexistent",
+    "project_dir": "/nonexistent",
+    "added_dirs": [],
+    "repo": {
+      "host": "github.com",
+      "owner": "Mon-pub",
+      "name": "statusline"
+    }
+  },
+  "version": "2.1.261",
+  "output_style": {
+    "name": "default"
+  },
+  "cost": {
+    "total_cost_usd": 19.34,
+    "total_duration_ms": 9900000,
+    "total_api_duration_ms": 884011,
+    "total_lines_added": 1739,
+    "total_lines_removed": 223
+  },
+  "context_window": {
+    "total_input_tokens": 95211,
+    "total_output_tokens": 3,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 32,
+      "output_tokens": 3,
+      "cache_creation_input_tokens": 6577,
+      "cache_read_input_tokens": 88602
+    },
+    "used_percentage": 10,
+    "remaining_percentage": 90
+  },
+  "exceeds_200k_tokens": true,
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "1h",
+    "expires_at": 1788565176,
+    "requests": 4,
+    "misses": 0,
+    "expected_rebuilds": 0,
+    "hit_ratio": 0.63,
+    "cache_write_tokens": 76748,
+    "miss_recache_tokens": 0,
+    "last_miss_at": null,
+    "last_miss_cause": null,
+    "miss_causes": {},
+    "recache_tokens_if_cold": 88634
+  },
+  "fast_mode": false,
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 57.99999999999999,
+      "resets_at": 1788570000
+    },
+    "seven_day": {
+      "used_percentage": 12,
+      "resets_at": 1788757200
+    }
+  }
+}
