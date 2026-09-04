@@ -70,8 +70,11 @@ t=$(compute_credit_for_jsonl "$J"); assert_contains "estimate dedups by message 
 t=$(emit_credit_rows_for_jsonl "$J"); assert_contains "per-model row bucket" "$t" "fable-5.1	0.4350	0.1000"
 
 echo "== renderer: modern CC 2.1.261 fixture =="
+# project_dir points at a scratch dir that EXISTS: the backup bridge falls back
+# to $PWD for a missing one, which would write backups into the repo itself.
+RP="$SCRATCH/render-proj"; mkdir -p "$RP"
 M="$SCRATCH/modern.json"
-jq --argjson n "$now" '.rate_limits.five_hour.resets_at=($n+7230) | .rate_limits.seven_day.resets_at=($n+260000) | .prompt_cache.expires_at=($n+2550)' "$FX/cc-2.1.261-live.json" > "$M"
+jq --argjson n "$now" --arg rp "$RP" '.workspace.project_dir=$rp | .rate_limits.five_hour.resets_at=($n+7230) | .rate_limits.seven_day.resets_at=($n+260000) | .prompt_cache.expires_at=($n+2550)' "$FX/cc-2.1.261-live.json" > "$M"
 out=$(render "$M"); [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$out"
 assert_contains "model + effort badge"        "$out" "Fable 5.1 (high)"
 assert_contains "context tokens (input-only)" "$out" "/1m (10% used)"
@@ -116,7 +119,7 @@ assert_not_contains "no dangling separator" "$out" "○ · "
 echo "== renderer: legacy CC (no cost, no effort key, transcript estimate) =="
 L="$SCRATCH/legacy.json"
 printf '{"effortLevel":"max"}' > "$CLAUDE_CONFIG_DIR/settings.json"
-jq -c --arg t "$J" '{session_id:"legacy-1",transcript_path:$t,model:{id:"claude-fable-5-1",display_name:"Fable"},context_window:{context_window_size:200000,current_usage:{input_tokens:1000,cache_read_input_tokens:100000,cache_creation_input_tokens:20000,output_tokens:2000}}}' -n > "$L"
+jq -c --arg t "$J" --arg rp "$RP" '{session_id:"legacy-1",transcript_path:$t,cwd:$rp,model:{id:"claude-fable-5-1",display_name:"Fable"},context_window:{context_window_size:200000,current_usage:{input_tokens:1000,cache_read_input_tokens:100000,cache_creation_input_tokens:20000,output_tokens:2000}}}' -n > "$L"
 out=$(render "$L"); [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$out"
 assert_contains "effort falls back to settings.json on old CC" "$out" "Fable (max)"
 assert_contains "manual % used from input tokens"             "$out" "121k/200k (60% used)"
@@ -194,6 +197,14 @@ node "$NODE/context-breakdown.mjs" "$B" "../evil" 2>/dev/null; [ ! -e "$XDG_CACH
 # The bash side renders from that cache
 FL="$SCRATCH/fill.json"; jq -c --arg t "$B" '.session_id="brk-1" | .transcript_path=$t' "$M" > "$FL"
 out=$(render "$FL"); assert_contains "fill line rendered from cache" "$out" "fill: chat In+Out"
+
+echo "== isolation =="
+# The renderer spawns background backup triggers; give them a moment, then make
+# sure nothing landed outside the scratch dir.
+sleep 1
+stray=$(find "$ROOT/.claude/backups" -newer "$SCRATCH" -type f 2>/dev/null | grep -v -E '/[0-9]+-backup-[0-9-]+\.md$|/\.state-[0-9a-f-]{36}\.json$' || true)
+[ -z "$stray" ] && ok "no test artefacts written into the repo" || fail "test wrote into repo" "$stray"
+[ -d "$RP/.claude/backups" ] && ok "renderer backups went to the scratch project" || ok "renderer spawned no backup (fine)"
 
 echo
 printf 'passed: %d  failed: %d\n' "$PASS" "$FAIL"
