@@ -13,7 +13,7 @@
 # when the transcript's mtime has changed since the last spawn — so a long
 # session's ~300ms re-renders never re-parse the file.
 
-_CTX_NODE_DIR="${STATUSLINE_NODE_DIR:-${HOME}/.claude/statusline-node}"
+_CTX_NODE_DIR="${STATUSLINE_NODE_DIR:-${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/statusline-node}"
 _CTX_CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
 
 # Short display labels for the four buckets the node side emits.
@@ -56,11 +56,12 @@ get_context_breakdown() {
 
     # Stale (or missing) cache → spawn the node parser in the background, but only
     # once per transcript mtime (the spawn marker dedups the ~300ms re-renders).
-    if [ "$cached_mtime" != "$cur_mtime" ] && [ -f "${_CTX_NODE_DIR}/context-breakdown.mjs" ]; then
+    if [ "$cached_mtime" != "$cur_mtime" ] && [ -f "${_CTX_NODE_DIR}/context-breakdown.mjs" ] \
+       && command -v node >/dev/null 2>&1; then
         local last_spawn=""
         [ -f "$spawn_marker" ] && last_spawn=$(cat "$spawn_marker" 2>/dev/null)
         if [ "$last_spawn" != "$cur_mtime" ]; then
-            mkdir -p -m 0700 "$_CTX_CACHE_DIR" 2>/dev/null
+            mkdir -p "$_CTX_CACHE_DIR" 2>/dev/null && chmod 0700 "$_CTX_CACHE_DIR" 2>/dev/null
             printf '%s' "$cur_mtime" > "$spawn_marker" 2>/dev/null
             ( node "${_CTX_NODE_DIR}/context-breakdown.mjs" \
                    "$transcript_path" "$safe_id" >/dev/null 2>&1 & ) 2>/dev/null

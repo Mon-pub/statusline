@@ -9,10 +9,14 @@
 #   fmt_reset_friendly <epoch> <style>  — time/datetime/date reset formatting
 #   project_cap <pct> <epoch> <win> — time-to-cap if on track to hit it first
 #   fmt_duration_ms <ms>            — compact "2h45m" wall-clock duration
+#   fmt_countdown <seconds>         — compact "42m" / "1h05m" / "<1m" countdown
+#   version_at_least <ver> <min>    — dotted-version compare (true when ver >= min)
+#   sweep_cache_dir <dir>           — daily, detached purge of 30-day-old cache files
 
 # ---------------------------------------------------------------------------
-# ANSI RGB color constants
+# ANSI RGB color constants (used by the sourcing scripts)
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2034
 C_BLUE=$'\x1b[38;2;0;153;255m'
 C_ORANGE=$'\x1b[38;2;255;176;85m'
 C_GREEN=$'\x1b[38;2;0;160;0m'
@@ -195,8 +199,11 @@ project_cap() {
     }')
     [[ "$secs" =~ ^[0-9]+$ ]] || return
 
+    # "1h12m" under a day, "4d20h" beyond it (weekly window projections).
     local h=$(( secs / 3600 )) m=$(( (secs % 3600) / 60 )) dur
-    if [ "$h" -gt 0 ]; then
+    if [ "$h" -ge 24 ]; then
+        dur="$(( h / 24 ))d$(( h % 24 ))h"
+    elif [ "$h" -gt 0 ]; then
         dur="${h}h${m}m"
     else
         dur="$(( m < 1 ? 1 : m ))m"
@@ -232,4 +239,65 @@ fmt_duration_ms() {
     else
         printf '%ds' "$sec"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# fmt_countdown <seconds>
+# Compact time-remaining: "<1m" / "42m" / "1h05m" / "2d3h". Empty on bad input.
+# ---------------------------------------------------------------------------
+fmt_countdown() {
+    local s="$1"
+    [[ "$s" =~ ^[0-9]+$ ]] || return
+    local m=$(( s / 60 )) h d
+    if [ "$m" -lt 1 ]; then
+        printf '<1m'
+    elif [ "$m" -lt 60 ]; then
+        printf '%dm' "$m"
+    elif [ "$m" -lt 1440 ]; then
+        h=$(( m / 60 ))
+        printf '%dh%02dm' "$h" "$(( m % 60 ))"
+    else
+        d=$(( m / 1440 )); h=$(( (m % 1440) / 60 ))
+        printf '%dd%dh' "$d" "$h"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# version_at_least <version> <minimum>
+# Numeric dotted-version compare ("2.1.261" >= "2.1.160"). An empty or
+# non-numeric <version> compares as 0 (i.e. old). Exit 0 when version >= minimum.
+# ---------------------------------------------------------------------------
+version_at_least() {
+    local v="$1" min="$2" a b i
+    IFS=. read -r -a a <<< "$v"
+    IFS=. read -r -a b <<< "$min"
+    for (( i=0; i<${#b[@]}; i++ )); do
+        local x="${a[$i]:-0}" y="${b[$i]:-0}"
+        [[ "$x" =~ ^[0-9]+$ ]] || x=0
+        [[ "$y" =~ ^[0-9]+$ ]] || y=0
+        [ "$x" -gt "$y" ] && return 0
+        [ "$x" -lt "$y" ] && return 1
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# sweep_cache_dir <dir>
+# At most once per 24h (tracked by a marker file's mtime), delete per-session
+# cache artefacts older than 30 days in <dir>: breakdown-*, delta-*, credit-*.
+# Runs detached in the background so the statusline render never waits on it.
+# Only the statusline's own file patterns are touched, never the whole dir.
+# ---------------------------------------------------------------------------
+sweep_cache_dir() {
+    local dir="$1"
+    [ -n "$dir" ] && [ -d "$dir" ] || return 0
+    local marker="${dir}/.last-sweep"
+    if [ -f "$marker" ] && [ -z "$(find "$marker" -mmin +1440 2>/dev/null)" ]; then
+        return 0
+    fi
+    : > "$marker" 2>/dev/null || return 0
+    ( find "$dir" -maxdepth 1 -type f \
+          \( -name 'breakdown-*' -o -name 'delta-*' -o -name 'credit-*' \) \
+          -mtime +30 -delete >/dev/null 2>&1 & ) 2>/dev/null
+    return 0
 }

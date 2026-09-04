@@ -1,31 +1,26 @@
 #!/bin/bash
 # statusline-command.sh — Claude Code statusline with ANSI colors, multi-line
-# layout, rate limit bars, burn-rate projection, session cost, and backup integration.
+# layout, rate limit bars, burn-rate projection, prompt-cache state, session
+# cost, and backup integration.
 #
 # Output (up to 5 lines; fill and backup lines are each conditional):
-#   Line 1: Model (effort) [no-think] | 219k/1m (22% used) | 748k 74% free
-#   Line 2: ctx: ●●●○… cache 78% | 5h: ●●●●○○○○ 43% ->cap 1h12m (Tue 14:30) | 7d: ●●○○○○○○ 22%
+#   Line 1: Model (effort) [fast] [no-think] | 219k/1m (22% used) | 748k 74% free | git: main #12
+#   Line 2: ctx: ●●●○… cache 78% · warm 42m | 5h: ●●●●○○○○ 43% ->cap 1h12m (Tue 14:30) | 7d: ●●○○○○○○ 22%
 #   Line 3: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
 #   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
 #   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
 #
-# The 'fill:' line appears only once its node-written cache exists; 'cache NN%'
-# on the ctx line shows the prompt-cache hit-rate. The '->cap Xh Ym' marker on a rate
-# bar appears only when the current burn rate is on track to hit that window's
-# limit before it resets. The weekly reset carries a countdown so its true
-# distance is visible (the window resets at an account-assigned fixed time).
+# All stdin fields are extracted in ONE jq pass (see EXTRACT FIELDS). Every
+# value that later reaches bash arithmetic is coerced to an integer/number
+# inside jq; every value that is printed has C0/C1 control bytes stripped
+# inside jq. Nothing from stdin is ever eval'd or expanded unquoted.
 #
-# Effort is read from the live stdin (.effort.level, authoritative for mid-session
-# /effort changes) and falls back to settings.json on older Claude Code. The
-# 'no-think' badge appears only in its non-default state. The cost headline uses
-# the native .cost.total_cost_usd when present (no transcript scan); only older
-# Claude Code without that field falls back to the JSONL estimate (with a dim
-# in/out split). +added/-removed comes from .cost.total_lines_*; the session
-# duration from .cost.total_duration_ms. The 'ctx fill' line is fed by a
-# node-written cache (see context-lib.sh).
-#
-# Configuration in settings.json:
-#   { "statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" } }
+# Configuration in settings.json (install.sh writes this):
+#   { "statusLine": { "type": "command",
+#                     "command": "bash ~/.claude/statusline-command.sh",
+#                     "refreshInterval": 60 } }
+# refreshInterval keeps the countdowns (resets, cache TTL, ->cap) ticking while
+# the session is idle; without it the line only re-renders on events.
 
 # shellcheck source=credit-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/credit-lib.sh"
@@ -35,69 +30,129 @@ source "$(dirname "${BASH_SOURCE[0]}")/display-lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/context-lib.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+CACHE_BASE="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
 
 input=$(cat)
+now=$(date +%s)
 
 # ============================================================================
-# EXTRACT FIELDS
+# EXTRACT FIELDS — one jq invocation, one value per output line.
+#
+# SECURITY: this is the trust boundary. `clean` strips C0/C1 controls (incl.
+# ESC) from anything printed so a crafted display_name / effort / branch can't
+# inject terminal escapes (cursor moves, OSC clipboard writes, hyperlink
+# spoofing). `int0`/`intb`/`numb`/`pctb` guarantee only digits reach `$(( ))`
+# — a JSON string like "a[$(cmd)]" in a numeric slot becomes 0 or "".
+# Absent values are emitted as "" (never `empty`, which would shift indices).
 # ============================================================================
+mapfile -t F < <(printf '%s' "$input" | jq -r '
+    def clean: if type=="string"
+               then (explode | map(select(. > 31 and . != 127 and (. < 128 or . > 159))) | implode)
+               else "" end;
+    def int0:  if type=="number" then floor else 0 end;
+    def intb:  if type=="number" then floor else "" end;
+    def numb:  if type=="number" then . else "" end;
+    def pctb:  if type=="number" and . >= 0 and . <= 100 then . else "" end;
+    def bool3: if type=="boolean" then tostring else "unset" end;
+    def ident: if type=="string" then gsub("[^A-Za-z0-9-]"; "_") else "" end;
+    [
+      (.model.display_name // "Unknown" | clean),                       # 0
+      (.model.id // "" | clean),                                         # 1
+      (.effort.level // "" | clean),                                     # 2
+      (.fast_mode | bool3),                                              # 3
+      (.thinking.enabled | bool3),                                       # 4
+      (.output_style.name // "" | clean),                                # 5
+      (.context_window.context_window_size
+         | if type=="number" and . > 0 then floor else 200000 end),      # 6
+      (.context_window.current_usage.input_tokens | int0),               # 7
+      (.context_window.current_usage.cache_read_input_tokens | int0),    # 8
+      (.context_window.current_usage.cache_creation_input_tokens | int0),# 9
+      (.context_window.current_usage.output_tokens | int0),              # 10
+      (.context_window.used_percentage | numb),                          # 11
+      (.rate_limits.five_hour.used_percentage | pctb),                   # 12
+      (.rate_limits.five_hour.resets_at | intb),                         # 13
+      (.rate_limits.seven_day.used_percentage | pctb),                   # 14
+      (.rate_limits.seven_day.resets_at | intb),                         # 15
+      (.rate_limits.spend_limit.used_percentage
+         | if type=="number" and . >= 0 then . else "" end),             # 16 (may exceed 100)
+      (.rate_limits.spend_limit.resets_at | intb),                       # 17
+      (.transcript_path // "" | clean),                                  # 18
+      (.session_id | ident),                                             # 19
+      (.cost.total_cost_usd | numb),                                     # 20
+      (.cost.total_duration_ms | intb),                                  # 21
+      (.cost.total_lines_added | intb),                                  # 22
+      (.cost.total_lines_removed | intb),                                # 23
+      (.prompt_cache.warm | bool3),                                      # 24
+      (.prompt_cache.caching_observed | bool3),                          # 25
+      (.prompt_cache.ttl // "" | clean),                                 # 26
+      (.prompt_cache.expires_at | intb),                                 # 27
+      (.workspace.project_dir // .cwd // "" | clean),                    # 28
+      (.workspace.current_dir // .cwd // "" | clean),                    # 29
+      (.pr.number | intb),                                               # 30
+      ((.worktree.name // .workspace.git_worktree // "") | clean),       # 31
+      (.agent.name // "" | clean),                                       # 32
+      (.version // "" | clean),                                          # 33
+      (if .effort == null then "0" else "1" end)                         # 34
+    ] | .[]' 2>/dev/null)
 
-model=$(echo "$input" | jq -r '.model.display_name // "Unknown"')
-# SECURITY: model name is printed to the terminal; strip C0/C1 control bytes
-# (incl. ESC 0x1b) so a crafted display_name can't perform terminal injection
-# (cursor moves, OSC clipboard writes, hyperlink spoofing).
-model=$(printf '%s' "$model" | tr -d '\000-\037\177')
+model="${F[0]:-Unknown}";     model_id="${F[1]}";        effort="${F[2]}"
+fast_mode="${F[3]}";          thinking_enabled="${F[4]}"; out_style="${F[5]}"
+window_size="${F[6]:-200000}"
+input_tokens="${F[7]:-0}";    cache_read="${F[8]:-0}"
+cache_create="${F[9]:-0}";    output_tokens="${F[10]:-0}"
+used_pct_raw="${F[11]}"
+five_pct="${F[12]}";          five_reset="${F[13]}"
+week_pct="${F[14]}";          week_reset="${F[15]}"
+spend_pct="${F[16]}";         spend_reset="${F[17]}"
+transcript_path="${F[18]}";   session_id="${F[19]}"
+native_cost="${F[20]}";       dur_ms="${F[21]}"
+lines_added="${F[22]}";       lines_removed="${F[23]}"
+pc_warm="${F[24]}";           pc_observed="${F[25]}"
+pc_ttl="${F[26]}";            pc_expires="${F[27]}"
+project_dir="${F[28]}";       current_dir="${F[29]}"
+pr_number="${F[30]}";         worktree_name="${F[31]}"
+agent_name="${F[32]}";        cc_version="${F[33]}";      has_effort_key="${F[34]:-0}"
 
-# Effort level — prefer live stdin (.effort.level, authoritative for mid-session
-# /effort changes), fall back to settings.json for older Claude Code versions.
-effort=$(echo "$input" | jq -r '.effort.level // empty' 2>/dev/null)
-if [ -z "$effort" ]; then
-    _claude_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
-    effort=$(jq -r '.effortLevel // empty' "${_claude_dir}/settings.json" 2>/dev/null)
+# Defense in depth: even though jq coerced these, re-assert the integer shape
+# before any `$(( ))` so a jq failure (empty F array) can't leak a raw string.
+for _v in window_size input_tokens cache_read cache_create output_tokens; do
+    [[ "${!_v}" =~ ^[0-9]+$ ]] || printf -v "$_v" '%s' 0
+done
+[ "$window_size" -gt 0 ] || window_size=200000
+
+# Effort: stdin is authoritative. Since CC 2.1.160 the key is present whenever the
+# model supports effort, and ABSENT when the model does not — so falling back to
+# settings.json would paint a badge the model can't honour. Only fall back on
+# older Claude Code that never emitted the key at all.
+if [ -z "$effort" ] && [ "$has_effort_key" = "0" ] && ! version_at_least "$cc_version" 2.1.160; then
+    effort=$(jq -r --arg m "$model_id" \
+        '(.modelSettings[$m].effortLevel // .effortLevel // "") | if type=="string" then . else "" end' \
+        "${CLAUDE_DIR}/settings.json" 2>/dev/null | tr -d '\000-\037\177')
 fi
-# SECURITY: effort is printed (the label is shown raw for unknown levels); strip
-# C0/C1 control bytes so a crafted effort.level can't inject terminal escapes.
-effort=$(printf '%s' "$effort" | tr -d '\000-\037\177')
 case "$effort" in
     "")     think_label=""        ;;  # absent: hide field
     medium) think_label="med"     ;;  # abbreviate
     *)      think_label="$effort" ;;  # low/high/xhigh/max + any new level shown raw
 esac
 
-# Fast mode / thinking state — booleans need an explicit null test (a plain
-# `// empty` would swallow a real `false`). Yields: true / false / unset.
-fast_mode=$(echo "$input" | jq -r 'if .fast_mode==null then "unset" else (.fast_mode|tostring) end' 2>/dev/null)
-thinking_enabled=$(echo "$input" | jq -r 'if .thinking.enabled==null then "unset" else (.thinking.enabled|tostring) end' 2>/dev/null)
-
-# Context window — prefer current_usage for precision, fall back to top-level.
-# SECURITY: every value that feeds bash arithmetic `$(( ))` below is forced to a
-# real integer at the jq boundary. Without this, a stdin field carrying a JSON
-# string like "a[$(cmd)]" would be evaluated by bash arithmetic as a command
-# substitution (RCE). `if type=="number" then floor else 0 end` guarantees only
-# digits reach `$(( ))`.
-_int() { echo "$input" | jq -r "(${1}) // 0 | if type==\"number\" then floor else 0 end" 2>/dev/null; }
-window_size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000 | if type=="number" and . > 0 then floor else 200000 end' 2>/dev/null)
-input_tokens=$(_int '.context_window.current_usage.input_tokens')
-cache_read=$(_int '.context_window.current_usage.cache_read_input_tokens')
-cache_create=$(_int '.context_window.current_usage.cache_creation_input_tokens')
-output_tokens=$(_int '.context_window.current_usage.output_tokens')
-used_pct_raw=$(echo "$input" | jq -r '.context_window.used_percentage // empty | if type=="number" then . else empty end' 2>/dev/null)
-[ -z "$window_size" ] && window_size=200000
-
 current_input=$(( input_tokens + cache_read + cache_create ))
 current_total=$(( current_input + output_tokens ))
 
 # Percentage used — prefer stdin's own used_percentage (matches Claude Code's UI
-# exactly), fall back to manual calc from token counts for older CC.
+# exactly; it is input-only by definition), fall back to the same input-only
+# formula from token counts for older CC.
 if [ -n "$used_pct_raw" ]; then
     pct_used=$(printf '%.0f' "$used_pct_raw")
-elif [ "$current_total" -gt 0 ] 2>/dev/null; then
+elif [ "$current_input" -gt 0 ]; then
     pct_used=$(awk -v t="$current_input" -v w="$window_size" 'BEGIN { printf "%d", (t/w)*100 }')
 else
     pct_used=0
 fi
 
-# Free tokens until autocompact (33k buffer)
+# Free tokens until autocompact. Claude Code compacts ~33k tokens before the
+# window edge (1M windows compact at about 967k — CHANGELOG 2.1.243), so the
+# usable space is window − live tokens − that buffer.
 AUTOCOMPACT_BUFFER=33000
 free_tokens=$(( window_size - current_total - AUTOCOMPACT_BUFFER ))
 [ "$free_tokens" -lt 0 ] && free_tokens=0
@@ -105,38 +160,24 @@ free_pct=$(awk -v f="$free_tokens" -v w="$window_size" 'BEGIN {
     p = (f/w)*100; if (p<0) p=0; printf "%d", p
 }')
 
-# Rate limits
-# Numeric-or-empty for all of these; resets_at also flows into `$(( epoch - now ))`.
-five_pct=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty | if type=="number" and . >= 0 and . <= 100 then . else empty end' 2>/dev/null)
-five_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
-week_pct=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty | if type=="number" and . >= 0 and . <= 100 then . else empty end' 2>/dev/null)
-week_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty | if type=="number" then floor else empty end' 2>/dev/null)
-
 # NOTE: there is no per-model (sonnet/opus) quota on the statusline stdin. The
-# documented rate_limits object has exactly two children — five_hour and
-# seven_day. A per-model weekly bucket exists only on the undocumented authed
-# OAuth usage endpoint, out of scope for a pure-stdin, never-break statusline.
-
-# Session info
-transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
-session_id=$(echo "$input"      | jq -r '.session_id      // empty')
-# SECURITY: session_id is used to build cache/state/lock file paths; strip every
-# character outside [A-Za-z0-9-] so it can never traverse directories or inject.
-session_id=$(printf '%s' "$session_id" | tr -c 'a-zA-Z0-9-' '_')
-[ "$session_id" = "_" ] && session_id=""
+# documented rate_limits object has five_hour, seven_day and (behind a Claude
+# apps gateway) spend_limit. A per-model weekly bucket exists only on the
+# undocumented authed OAuth usage endpoint, out of scope for a pure-stdin,
+# never-break statusline.
 
 # ============================================================================
-# LINE 1: Model | tokens (% used) | free tokens, % free
+# LINE 1: Model | tokens (% used) | free tokens, % free | git tail
 # ============================================================================
 
 model_display="${C_BLUE}${model}${C_RESET}"
+[ -n "$agent_name" ] && model_display="${C_DIM}agent:${C_RESET}${C_WHITE}${agent_name}${C_RESET} ${model_display}"
 [ -n "$think_label" ] && model_display="${model_display} ${C_DIM}(${think_label})${C_RESET}"
 # fast mode: surface only the non-default (true) state
 [ "$fast_mode" = "true" ] && model_display="${model_display} ${C_YELLOW}fast${C_RESET}"
 # thinking: surface only the off state (the effort badge already implies thinking on)
 [ "$thinking_enabled" = "false" ] && model_display="${model_display} ${C_DIM}no-think${C_RESET}"
-# output style: surface only when non-default (control bytes stripped, it is printed)
-out_style=$(echo "$input" | jq -r '.output_style.name // empty' 2>/dev/null | tr -d '\000-\037\177')
+# output style: surface only when non-default
 [ -n "$out_style" ] && [ "$out_style" != "default" ] && model_display="${model_display} ${C_DIM}${out_style}${C_RESET}"
 
 used_str=$(format_tokens "$current_input")
@@ -148,68 +189,107 @@ free_display="${C_ORANGE}${free_str}${C_RESET} ${C_BLUE}${free_pct}% free${C_RES
 
 line1="${model_display}${C_SEP}${tokens_display}${C_SEP}${free_display}"
 
+# Git tail: branch (or short SHA when detached), open PR number, worktree name.
+# `git` is optional; one cheap plumbing call, never a working-tree scan.
+git_tail=""
+if [ -n "$current_dir" ] && [ -d "$current_dir" ] && command -v git >/dev/null 2>&1; then
+    branch=$(git -C "$current_dir" symbolic-ref -q --short HEAD 2>/dev/null \
+          || git -C "$current_dir" rev-parse --short HEAD 2>/dev/null)
+    branch=$(printf '%s' "$branch" | tr -d '\000-\037\177')
+    [ -n "$branch" ] && git_tail="${C_WHITE}${branch}${C_RESET}"
+fi
+[ -n "$pr_number" ]     && git_tail="${git_tail}${git_tail:+ }${C_CYAN}#${pr_number}${C_RESET}"
+[ -n "$worktree_name" ] && git_tail="${git_tail}${git_tail:+ }${C_DIM}wt:${C_RESET}${C_WHITE}${worktree_name}${C_RESET}"
+[ -n "$git_tail" ] && line1="${line1}${C_SEP}${C_DIM}git:${C_RESET} ${git_tail}"
+
 # ============================================================================
-# LINE 2: Rate limit bars + burn-rate projection
-#
-# Each bar may carry a "->cap Xh Ym" marker: the projected time until the window
-# hits 100% at the current burn rate, shown ONLY when that is sooner than the
-# window resets (i.e. you are on track to be capped before relief). When you are
-# not on track to hit the cap, no marker shows — the bar stays clean.
+# RATE BARS (share the ctx line): 5h / 7d / spend, each with an optional
+# "->cap Xh Ym (Day HH:MM)" burn-rate marker — shown ONLY when the current pace
+# hits 100% before the window resets. Otherwise the bar stays clean.
 # ============================================================================
 
-line2=""
-line2_parts=()
+rate_parts=()
 
 # 5-hour bar (rolling 5h window = 18000s)
 if [ -n "$five_pct" ]; then
     five_int=$(printf '%.0f' "$five_pct")
-    five_bar=$(build_bar "$five_int" 10)
-    five_seg="${C_WHITE}5h:${C_RESET} ${five_bar} ${C_GREEN}${five_int}%${C_RESET}"
+    five_seg="${C_WHITE}5h:${C_RESET} $(build_bar "$five_int" 10) ${C_GREEN}${five_int}%${C_RESET}"
     if [ -n "$five_reset" ]; then
         five_cap=$(project_cap "$five_pct" "$five_reset" 18000)
         [ -n "$five_cap" ] && five_seg="${five_seg} ${C_RED}->cap ${five_cap}${C_RESET}"
     fi
-    line2_parts+=("$five_seg")
+    rate_parts+=("$five_seg")
 fi
 
 # 7-day bar (weekly window = 604800s)
 if [ -n "$week_pct" ]; then
     week_int=$(printf '%.0f' "$week_pct")
-    week_bar=$(build_bar "$week_int" 10)
-    week_seg="${C_WHITE}7d:${C_RESET} ${week_bar} ${C_GREEN}${week_int}%${C_RESET}"
+    week_seg="${C_WHITE}7d:${C_RESET} $(build_bar "$week_int" 10) ${C_GREEN}${week_int}%${C_RESET}"
     if [ -n "$week_reset" ]; then
         week_cap=$(project_cap "$week_pct" "$week_reset" 604800)
         [ -n "$week_cap" ] && week_seg="${week_seg} ${C_RED}->cap ${week_cap}${C_RESET}"
     fi
-    line2_parts+=("$week_seg")
+    rate_parts+=("$week_seg")
 fi
 
-# Join line2 parts with separator
-for (( i=0; i<${#line2_parts[@]}; i++ )); do
-    [ "$i" -gt 0 ] && line2="${line2}${C_SEP}"
-    line2="${line2}${line2_parts[$i]}"
+# Spend-limit bar (Claude apps gateway; CC 2.1.251+). May exceed 100% once the
+# limit is breached — the bar clamps, the number tells the truth (red past 100).
+if [ -n "$spend_pct" ]; then
+    spend_int=$(printf '%.0f' "$spend_pct")
+    spend_color="$C_GREEN"; [ "$spend_int" -gt 100 ] 2>/dev/null && spend_color="$C_RED"
+    rate_parts+=("${C_WHITE}spend:${C_RESET} $(build_bar "$spend_int" 10) ${spend_color}${spend_int}%${C_RESET}")
+fi
+
+rate_line=""
+for (( i=0; i<${#rate_parts[@]}; i++ )); do
+    [ "$i" -gt 0 ] && rate_line="${rate_line}${C_SEP}"
+    rate_line="${rate_line}${rate_parts[$i]}"
 done
 
 # ============================================================================
-# CONTEXT LINE: the 16-char context bar plus the prompt-cache hit-rate. The
-# per-category "fill" breakdown is emitted SEPARATELY, on its own line below the
-# rate bars (see fill_line / the OUTPUT section).
+# CONTEXT LINE: 16-char context bar + prompt-cache state, then the rate bars.
 # ============================================================================
-ctx_bar=$(build_bar "$pct_used" 16)
-ctx_line="${C_WHITE}ctx:${C_RESET} ${ctx_bar}"
+ctx_line="${C_WHITE}ctx:${C_RESET} $(build_bar "$pct_used" 16)"
 
-# Cache hit-rate: share of the current input that was served from the prompt
-# cache (cache_read / all input tokens). High cache reuse = lower cost; this is a
-# cheap, high-signal number from tokens we already extracted. Hidden when there
-# is no input yet (e.g. right after /compact, current_usage is null -> all zero).
+# Cache share of the CURRENT request: cache_read / all input tokens. High reuse
+# = cheap turns. Hidden when there is no input yet (e.g. right after /compact).
 cache_total=$(( input_tokens + cache_read + cache_create ))
+cache_shown=0
 if [ "$cache_total" -gt 0 ]; then
     cache_pct=$(awk -v r="$cache_read" -v t="$cache_total" 'BEGIN { printf "%d", (r/t)*100 }')
-    [[ "$cache_pct" =~ ^[0-9]+$ ]] && ctx_line="${ctx_line} ${C_DIM}cache${C_RESET} ${C_CYAN}${cache_pct}%${C_RESET}"
+    if [[ "$cache_pct" =~ ^[0-9]+$ ]]; then
+        ctx_line="${ctx_line} ${C_DIM}cache${C_RESET} ${C_CYAN}${cache_pct}%${C_RESET}"
+        cache_shown=1
+    fi
 fi
 
-# FILL LINE: the per-category breakdown of what is eating the live window, on its
-# own line (below the rate bars). Present only when the node-written cache exists.
+# Prompt-cache TTL state (CC 2.1.251+): "warm 42m" counts down to the moment the
+# cached prefix goes cold and the next turn re-pays the full write price. Green
+# with >10m left, yellow ≤10m, red ≤3m; "cold" in red once it has lapsed.
+cache_state=""
+if [ "$pc_warm" = "true" ] && [[ "$pc_expires" =~ ^[0-9]+$ ]]; then
+    left=$(( pc_expires - now ))
+    if [ "$left" -gt 0 ]; then
+        left_color="$C_GREEN"
+        [ "$left" -le 600 ] && left_color="$C_YELLOW"
+        [ "$left" -le 180 ] && left_color="$C_RED"
+        cache_state="${C_DIM}warm${C_RESET} ${left_color}$(fmt_countdown "$left")${C_RESET}"
+        [ -n "$pc_ttl" ] && cache_state="${C_DIM}${pc_ttl}${C_RESET} ${cache_state}"
+    else
+        cache_state="${C_RED}cold${C_RESET}"
+    fi
+elif [ "$pc_warm" = "false" ] && [ "$pc_observed" = "true" ]; then
+    cache_state="${C_RED}cold${C_RESET}"
+fi
+if [ -n "$cache_state" ]; then
+    [ "$cache_shown" -eq 1 ] && ctx_line="${ctx_line} ${C_DIM}·${C_RESET}"
+    ctx_line="${ctx_line} ${cache_state}"
+fi
+
+[ -n "$rate_line" ] && ctx_line="${ctx_line}${C_SEP}${rate_line}"
+
+# FILL LINE: per-category breakdown of what is eating the live window, on its
+# own line. Present only when the node-written cache exists.
 fill_line=""
 if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
     ctx_break=$(get_context_breakdown "$session_id" "$transcript_path")
@@ -217,44 +297,40 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
 fi
 
 # ============================================================================
-# LINE 3: Reset times + session cost
+# LINE 3: Reset times + session cost + burn rate + duration + lines changed
 # ============================================================================
 
-line3=""
 line3_parts=()
 
-# 5-hour reset
 if [ -n "$five_reset" ] && [ -n "$five_pct" ]; then
-    five_reset_str=$(fmt_reset_friendly "$five_reset" "time")
-    [ -n "$five_reset_str" ] && line3_parts+=("${C_WHITE}resets ${five_reset_str}${C_RESET}")
+    s=$(fmt_reset_friendly "$five_reset" "time")
+    [ -n "$s" ] && line3_parts+=("${C_WHITE}resets ${s}${C_RESET}")
 fi
-
-# 7-day reset
 if [ -n "$week_reset" ] && [ -n "$week_pct" ]; then
-    week_reset_str=$(fmt_reset_friendly "$week_reset" "datetime")
-    [ -n "$week_reset_str" ] && line3_parts+=("${C_WHITE}resets ${week_reset_str}${C_RESET}")
+    s=$(fmt_reset_friendly "$week_reset" "datetime")
+    [ -n "$s" ] && line3_parts+=("${C_WHITE}resets ${s}${C_RESET}")
+fi
+if [ -n "$spend_reset" ] && [ -n "$spend_pct" ]; then
+    s=$(fmt_reset_friendly "$spend_reset" "datetime")
+    [ -n "$s" ] && line3_parts+=("${C_WHITE}spend resets ${s}${C_RESET}")
 fi
 
 # Session cost. The headline is Claude Code's authoritative cost.total_cost_usd.
-# When it is present (modern CC) we do NOT scan the transcript at all — scanning a
-# multi-hundred-MB JSONL on every ~300ms statusline render would be a DoS on long
-# sessions, and the mtime cache misses every turn while the session is active.
-# The per-side in/out split and per-model breakdown remain available offline via
-# credit-summary.sh / credit-project.sh. Only older Claude Code that lacks the
-# cost field falls back to the (cached) JSONL estimate here.
-native_cost=$(echo "$input" | jq -r 'if (.cost.total_cost_usd|type)=="number" then .cost.total_cost_usd else empty end' 2>/dev/null)
+# When present (modern CC) we do NOT scan the transcript — scanning a
+# multi-hundred-MB JSONL on every render would be a DoS on long sessions. Only
+# older Claude Code without the cost field falls back to the (mtime-cached)
+# JSONL estimate, which also yields a dim in/out split.
 credit_str=""
+_tot=""
 if [ -n "$native_cost" ]; then
     native_fmt=$(printf '%.2f' "$native_cost" 2>/dev/null) || native_fmt=""
     [ -n "$native_fmt" ] && credit_str="${C_CYAN}\$${native_fmt}${C_RESET}"
 elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id" ]; then
-    # Older CC (no cost field): estimate from the transcript JSONL, cached on mtime.
-    _cache_base="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline"
-    mkdir -p -m 0700 "$_cache_base" 2>/dev/null
-    cache_file="${_cache_base}/credit-${session_id}.cache"
+    mkdir -p "$CACHE_BASE" 2>/dev/null && chmod 0700 "$CACHE_BASE" 2>/dev/null
+    cache_file="${CACHE_BASE}/credit-${session_id}.cache"
     cur_mtime=$(stat -c '%Y' "$transcript_path" 2>/dev/null \
              || stat -f '%m' "$transcript_path" 2>/dev/null || echo "0")
-    _in=""; _out=""; _tot=""
+    _in=""; _out=""
 
     if [ -f "$cache_file" ]; then
         cached_mtime=$(cut -d' ' -f1 "$cache_file")
@@ -266,7 +342,6 @@ elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id
             cur_mtime=""
         fi
     fi
-
     if [ -n "$cur_mtime" ]; then
         credit=$(compute_credit_for_jsonl "$transcript_path")
         if [ -n "$credit" ]; then
@@ -276,22 +351,19 @@ elif [ -n "$transcript_path" ] && [ -f "$transcript_path" ] && [ -n "$session_id
             _tot=$( printf '%s' "$credit" | cut -f3)
         fi
     fi
-
+    # The cached values are re-validated as decimals before they are printed.
+    for _v in _in _out _tot; do
+        [[ "${!_v}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || printf -v "$_v" '%s' ""
+    done
     [ -n "$_tot" ] && credit_str="${C_CYAN}\$${_tot}${C_RESET} ${C_DIM}(in:\$${_in} out:\$${_out})${C_RESET}"
 fi
-
 [ -n "$credit_str" ] && line3_parts+=("$credit_str")
 
-# Cost burn rate + session duration, both from the .cost object.
-dur_ms=$(echo "$input" | jq -r 'if (.cost.total_duration_ms|type)=="number" then (.cost.total_duration_ms|floor) else empty end' 2>/dev/null)
-# Numeric session cost: the native total when present, else the JSONL-estimate total.
-cost_num="${native_cost:-${_tot:-}}"
-
 # Burn rate ($/hr): total cost over wall-clock session time. Hidden unless both
-# the cost and a positive duration are known. awk does the float division.
-if [ -n "$cost_num" ] && [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; then
+# the cost and a positive duration are known.
+cost_num="${native_cost:-${_tot}}"
+if [ -n "$cost_num" ] && [[ "$dur_ms" =~ ^[0-9]+$ ]] && [ "$dur_ms" -gt 0 ]; then
     rate_str=$(awk -v c="$cost_num" -v ms="$dur_ms" 'BEGIN {
-        if (ms <= 0) exit
         r = c * 3600000.0 / ms
         if (r < 0) exit
         printf "%.2f", r
@@ -299,60 +371,56 @@ if [ -n "$cost_num" ] && [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; th
     [ -n "$rate_str" ] && line3_parts+=("${C_DIM}\$${rate_str}/h${C_RESET}")
 fi
 
-# Session wall-clock duration (cost.total_duration_ms; current schema). Cheap,
-# always-present alongside the cost object. Absent -> hidden.
-if [ -n "$dur_ms" ] && [ "$dur_ms" -gt 0 ] 2>/dev/null; then
+# Session wall-clock duration (cost.total_duration_ms). Absent -> hidden.
+if [[ "$dur_ms" =~ ^[0-9]+$ ]] && [ "$dur_ms" -gt 0 ]; then
     dur_str=$(fmt_duration_ms "$dur_ms")
     [ -n "$dur_str" ] && line3_parts+=("${C_DIM}${dur_str}${C_RESET}")
 fi
 
-# Lines added/removed this session (new schema; cheap top-level fields)
-lines_added=$(echo "$input"   | jq -r 'if (.cost.total_lines_added|type)=="number"   then (.cost.total_lines_added|floor)   else empty end' 2>/dev/null)
-lines_removed=$(echo "$input" | jq -r 'if (.cost.total_lines_removed|type)=="number" then (.cost.total_lines_removed|floor) else empty end' 2>/dev/null)
-if [ -n "$lines_added" ] && [ -n "$lines_removed" ] \
-   && { [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; } 2>/dev/null; then
+# Lines added/removed this session (cost.total_lines_*)
+if [[ "$lines_added" =~ ^[0-9]+$ ]] && [[ "$lines_removed" =~ ^[0-9]+$ ]] \
+   && { [ "$lines_added" -gt 0 ] || [ "$lines_removed" -gt 0 ]; }; then
     line3_parts+=("${C_GREEN}+${lines_added}${C_RESET}${C_DIM}/${C_RESET}${C_RED}-${lines_removed}${C_RESET}")
 fi
 
-# Join line3 parts with separator
+line3=""
 for (( i=0; i<${#line3_parts[@]}; i++ )); do
     [ "$i" -gt 0 ] && line3="${line3}${C_SEP}"
     line3="${line3}${line3_parts[$i]}"
 done
 
 # ============================================================================
-# LINE 4: Backup path (conditional)
+# LINE 4: Backup path (conditional) + background backup trigger
 # ============================================================================
 
 line4=""
-if [ -n "$session_id" ] && [ -n "$SCRIPT_DIR" ]; then
-    # Source backup-bridge if it exists
-    _bridge="${SCRIPT_DIR}/backup-bridge.sh"
-    if [ -f "$_bridge" ]; then
-        # shellcheck source=backup-bridge.sh
-        source "$_bridge"
-        backup_path=$(get_backup_path "$session_id")
-        if [ -n "$backup_path" ]; then
-            line4="${C_YELLOW}->${C_RESET} ${C_RED}${backup_path}${C_RESET}"
-        fi
+_bridge="${SCRIPT_DIR}/backup-bridge.sh"
+if [ -n "$session_id" ] && [ -f "$_bridge" ]; then
+    # shellcheck source=backup-bridge.sh
+    source "$_bridge"
+    backup_path=$(get_backup_path "$session_id" "$project_dir")
+    [ -n "$backup_path" ] && line4="${C_YELLOW}->${C_RESET} ${C_RED}${backup_path}${C_RESET}"
 
-        # Trigger backup check in background (node)
-        maybe_trigger_backup "$session_id" "$free_pct" "$current_total" "$transcript_path" &
-        disown 2>/dev/null || true
-    fi
+    # Trigger backup check in background (node); the 5k-token delta guard in
+    # the bridge keeps this from spawning node on every render.
+    maybe_trigger_backup "$session_id" "$free_pct" "$current_total" "$transcript_path" "$project_dir" &
+    disown 2>/dev/null || true
 fi
+
+# ============================================================================
+# HOUSEKEEPING: once a day, drop per-session cache files older than 30 days
+# (breakdown-*, delta-*, credit-*). Detached so it never delays the render.
+# ============================================================================
+sweep_cache_dir "$CACHE_BASE"
 
 # ============================================================================
 # OUTPUT
 # ============================================================================
 
-# The 5h/7d rate bars share the ctx line, after the cache hit-rate.
-[ -n "$line2" ] && ctx_line="${ctx_line}${C_SEP}${line2}"
-
 printf '%s' "$line1"
-[ -n "$ctx_line" ]  && printf '\n%s' "$ctx_line"   # ctx bar + cache + 5h/7d
-[ -n "$fill_line" ] && printf '\n%s' "$fill_line"    # context-fill breakdown
-[ -n "$line3" ]     && printf '\n%s' "$line3"        # resets / cost / $hr / dur / lines
-[ -n "$line4" ]     && printf '\n%s' "$line4"        # backup path
+[ -n "$ctx_line" ]  && printf '\n%s' "$ctx_line"    # ctx bar + cache + 5h/7d/spend
+[ -n "$fill_line" ] && printf '\n%s' "$fill_line"   # context-fill breakdown
+[ -n "$line3" ]     && printf '\n%s' "$line3"       # resets / cost / $hr / dur / lines
+[ -n "$line4" ]     && printf '\n%s' "$line4"       # backup path
 
 exit 0
