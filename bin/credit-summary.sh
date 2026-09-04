@@ -66,7 +66,7 @@ if [ -n "$project_dir" ]; then
         jsonl_files+=("$f")
     done < <(find "$project_dir" -maxdepth 1 -name '*.jsonl' -print0 2>/dev/null | sort -z)
 else
-    claude_projects="${HOME}/.claude/projects"
+    claude_projects="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/projects"
     if [ ! -d "$claude_projects" ]; then
         echo "No projects found at: $claude_projects" >&2
         exit 1
@@ -176,7 +176,7 @@ if [ -s "$tmp_rows" ]; then
                 tot = sum_tot[b]
                 if (tot <= 0) continue
                 pct   = (grand > 0) ? (tot / grand * 100) : 0
-                label = b "-*"
+                label = b
                 printf "  %-14s $%8.4f  (in:$%.4f  out:$%.4f  %.1f%%)\n", \
                     label, tot, sum_in[b], sum_out[b], pct
             }

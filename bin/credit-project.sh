@@ -11,10 +11,10 @@
 #   TOTAL          $<grand-total>  (in:$<grand-input>  out:$<grand-output>)
 #
 #   MODELS:
-#     opus-*     $<cost>  (NN.N%)
-#     sonnet-*   $<cost>  (NN.N%)
-#     haiku-*    $<cost>  (NN.N%)
-#     mythos-*   $<cost>  (NN.N%)   ← future families appear automatically
+#     opus-4.8   $<cost>  (NN.N%)
+#     sonnet-5.0 $<cost>  (NN.N%)
+#     fable-5.1  $<cost>  (NN.N%)
+#     opus-4.8+fast  …      ← fast-mode turns and future families appear automatically
 #
 # Known families (opus/sonnet/haiku) use their published rate cards.
 # Unknown/future families fall back to Opus pricing but are labelled with their
@@ -123,7 +123,7 @@ if [ -s "$tmp_rows" ]; then
                 tot = sum_tot[b]
                 if (tot <= 0) continue
                 pct   = (grand > 0) ? (tot / grand * 100) : 0
-                label = b "-*"
+                label = b
                 printf "  %-14s $%8.4f  (in:$%.4f  out:$%.4f  %.1f%%)\n", \
                     label, tot, sum_in[b], sum_out[b], pct
             }
