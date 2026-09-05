@@ -45,7 +45,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 
 ### Companion tools
 
-- **`credit-report.sh`** — one colored report for the whole account: total, by model, by project, by session, **with every subagent and workflow-agent transcript billed to the session that spawned them** (`<session>/subagents/**`; on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Sessions that used several models get a `↳` line with the per-model split. Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
+- **`credit-report.sh`** — one colored report for the whole account: total, over time, by model, by project, by session, **with every subagent and workflow-agent transcript billed to the session that spawned them** (`<session>/subagents/**`; on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Every message is counted **on the day it was produced**, so `--since`/`--until` report money spent in the window rather than whole sessions touched in it. Sessions that used several models get a `↳` line with the per-model split. Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
 - **`credit-project.sh`** — totals cost across every session in one project directory, with per-model breakdown.
 - **`credit-summary.sh`** — flat cross-project totals with date filtering.
 
@@ -149,7 +149,8 @@ install.sh                — copies everything + wires settings.json
 
 ```bash
 bash ~/.claude/credit-report.sh                     # everything, all time
-bash ~/.claude/credit-report.sh --since 2026-08-01  # sessions active since a date
+bash ~/.claude/credit-report.sh --since 2026-08-01  # money spent from that day onward
+bash ~/.claude/credit-report.sh --since 2026-08-01 --until 2026-08-31   # just August
 bash ~/.claude/credit-report.sh --all ~/my-project  # every session of one project
 bash ~/.claude/credit-report.sh --json | jq .total  # machine-readable
 ```
@@ -157,7 +158,14 @@ bash ~/.claude/credit-report.sh --json | jq .total  # machine-readable
 ```
  Claude Code spend report  2026-09-06 · all time · offline estimate
  ──────────────────────────────────────────────────────────────────────────────────────
- TOTAL  $16,107.03     in $14,412.48 · out $1,694.55   15 projects · 45 sessions · 675 agents
+ TOTAL  $19,753.95     in $17,943.44 · out $1,810.51   15 projects · 45 sessions · 3082 agents
+ activity 2026-05-22 → 2026-09-06
+
+ BY MONTH
+   2026-06             $4,600.38  ███████░░░░░░░░░░░░░░░░░░░░░░░  23.3%  20 active days
+   2026-07             $8,745.90  █████████████░░░░░░░░░░░░░░░░░  44.3%  28 active days
+   2026-08             $4,914.71  ███████░░░░░░░░░░░░░░░░░░░░░░░  24.9%  22 active days
+   2026-09             $1,313.56  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░   6.6%  6 active days
 
  BY MODEL
    opus-4.8            $8,364.48  ████████████████░░░░░░░░░░░░░░  51.9%  in $7,606.38 · out $758.11
@@ -173,7 +181,9 @@ bash ~/.claude/credit-report.sh --json | jq .total  # machine-readable
      + 2 more session(s) · $5.19
 ```
 
-Figures are API-equivalent (published per-token rates); on a subscription they are the value consumed, not a bill. The first run prices every transcript (a few seconds per GB); results are cached under `~/.cache/claude-statusline/report/` keyed on file mtimes and sizes, so later runs are instant until a transcript changes (`--refresh` forces a rebuild).
+Buckets are months once the span passes a month, single days below that, and they always sum to the total. Figures are API-equivalent (published per-token rates); on a subscription they are the value consumed, not a bill. The first run prices every transcript (a few seconds per GB); results are cached per session under `~/.cache/claude-statusline/report/` keyed on file sizes and mtimes, so later runs are instant until a transcript changes (`--refresh` forces a rebuild).
+
+Why not filter on file modification time: a session can run for months, and Claude Code touches its transcript every time you resume it. One session here holds work from 23 May to 26 August in a file last written on 5 September — filtering on the file date billed all of it to September. `--since`/`--until` therefore slice on each message's own timestamp.
 
 ## Project-wide cost total
 

@@ -202,8 +202,11 @@ echo "== credit-report (account report) =="
 # Synthetic projects root: two projects; the first has a session with a subagent
 # transcript and a custom title, the second is older than the --since date.
 PR="$CLAUDE_CONFIG_DIR/projects"; mkdir -p "$PR/-tmp-alpha/s-aaaa/subagents" "$PR/-tmp-beta"
-mk_asst() { # <file> <msgid> <model> <in> <read> <out>
-    printf '{"type":"assistant","message":{"id":"%s","model":"%s","usage":{"input_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":0,"output_tokens":%d}}}\n' "$2" "$3" "$4" "$5" "$6" >> "$1"; }
+mk_asst() { # <file> <msgid> <model> <in> <read> <out> [day]  (day: YYYY-MM-DD, default September)
+    local day="${7:-2026-09-03}" ts
+    if [ "$day" = "none" ]; then ts=""; else ts=",\"timestamp\":\"${day}T12:00:00.000Z\""; fi
+    printf '{"type":"assistant"%s,"message":{"id":"%s","model":"%s","usage":{"input_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":0,"output_tokens":%d}}}\n' \
+        "$ts" "$2" "$3" "$4" "$5" "$6" >> "$1"; }
 A="$PR/-tmp-alpha/s-aaaa.jsonl"; : > "$A"
 printf '{"type":"user","cwd":"/tmp/alpha","message":{"role":"user","content":"hi"}}\n' >> "$A"
 printf '{"type":"ai-title","aiTitle":"AI title"}\n{"type":"custom-title","customTitle":"Alpha custom"}\n' >> "$A"
@@ -211,13 +214,14 @@ mk_asst "$A" m1 claude-opus-5 1000000 0 100000            # $5 + $2.50 = $7.50
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-x.jsonl" m2 claude-sonnet-5 1000000 0 0   # $2.00 (subagent)
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-y.jsonl" m3 claude-sonnet-5 500000 0 0    # $1.00 (subagent)
 mkdir -p "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1"
-mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1/agent-w.jsonl" m6 claude-haiku-4-5 1000000 0 0   # $1.00 (workflow agent)
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1/agent-w.jsonl" m6 claude-haiku-4-5 1000000 0 0 2026-08-15  # $1.00, AUGUST
 printf '{"type":"workflow-journal","note":"no assistant messages here"}\n' > "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1/journal.jsonl"
 mk_asst "$A" msyn "<synthetic>" 1000000 0 1000000          # must be ignored, not priced at Opus rates
 Bf="$PR/-tmp-beta/s-bbbb.jsonl"; : > "$Bf"
 printf '{"type":"user","cwd":"/tmp/beta","message":{"role":"user","content":"hi"}}\n' >> "$Bf"
-mk_asst "$Bf" m4 claude-haiku-4-5 1000000 0 0             # $1.00
-touch -d '2026-01-01' "$Bf" 2>/dev/null || touch -t 202601010000 "$Bf"
+mk_asst "$Bf" m4 claude-haiku-4-5 1000000 0 0 2026-01-15   # $1.00, JANUARY — file mtime left at NOW on
+                                                          # purpose: a stale-mtime filter would wrongly
+                                                          # bill this whole session to today.
 rep=$(bash "$BIN/credit-report.sh" --no-color --all 2>/dev/null)
 assert_contains "total = main + subagents + workflow agent + other project (synthetic ignored)" "$rep" "TOTAL  \$12.50"
 assert_contains "counts: journals are not agents"            "$rep" "2 projects · 2 sessions · 3 agents"
@@ -234,14 +238,67 @@ assert_not_contains "--since: beta gone"                    "$rep" "/tmp/beta"
 rep=$(bash "$BIN/credit-report.sh" --no-color --projects 2>/dev/null)
 assert_not_contains "--projects hides session rows"         "$rep" "Alpha custom"
 rep=$(bash "$BIN/credit-report.sh" --no-color --top 0 2>/dev/null)
-assert_contains "--top 0 folds every session"               "$rep" "+ 1 more session(s) · \$11.50"
+assert_contains "--top 0 folds every session"               "$rep" "+ 1 more session · \$11.50"
 mkdir -p /tmp/alpha 2>/dev/null
 rep=$(bash "$BIN/credit-report.sh" --no-color /tmp/alpha 2>/dev/null)
 assert_contains "project filter by real path (encoded)"     "$rep" "1 project · 1 session · 3 agents"
 j=$(bash "$BIN/credit-report.sh" --json 2>/dev/null)
 jq -e '.total.cost==12.5 and .sessions_count==2 and .agents_count==3 and (.projects[0].sessions[0].by_model|map(.model)|sort)==["haiku-4.5","opus-5.0","sonnet-5.0"] and .projects[0].sessions[0].title=="Alpha custom"' <<< "$j" >/dev/null \
     && ok "--json structure and totals" || fail "--json" "$(printf '%s' "$j" | head -c 400)"
-ncache=$(ls "$XDG_CACHE_HOME/claude-statusline/report/" | wc -l); [ "$ncache" -eq 2 ] && ok "one cache file per session" || fail "cache files" "$ncache"
+echo "== credit-report: time slicing (regression: mtime is not a date) =="
+# alpha: $10.50 on 2026-09-03 + $1.00 (workflow agent) on 2026-08-15
+# beta:  $1.00 on 2026-01-15, but its file was written moments ago.
+rep=$(bash "$BIN/credit-report.sh" --no-color --all 2>/dev/null)
+assert_contains "all-time spans both months"        "$rep" "activity 2026-01-15 → 2026-09-03"
+assert_contains "monthly buckets over a long span"  "$rep" "BY MONTH"
+printf '%s' "$rep" | grep -Eq '2026-01 +\$1\.00'  && ok "January bucket"  || fail "January bucket"
+printf '%s' "$rep" | grep -Eq '2026-08 +\$1\.00'  && ok "August bucket"   || fail "August bucket"
+printf '%s' "$rep" | grep -Eq '2026-09 +\$10\.50' && ok "September bucket" || fail "September bucket"
+bsum=$(printf '%s' "$rep" | awk '/^   (2026-|undated)/{gsub(/[$,]/,"",$2); t+=$2} END{printf "%.2f", t}')
+[ "$bsum" = "12.50" ] && ok "period buckets sum to the total" || fail "bucket sum" "$bsum"
+
+rep=$(bash "$BIN/credit-report.sh" --no-color --all --since 2026-09-01 2>/dev/null)
+assert_contains "--since counts only in-window messages, not whole sessions" "$rep" "TOTAL  \$10.50"
+assert_contains "--since: fresh-mtime January session excluded"              "$rep" "1 project · 1 session"
+assert_contains "narrow window switches to daily buckets"                    "$rep" "BY DAY"
+printf '%s' "$rep" | grep -Eq '2026-09-03 +\$10\.50' && ok "daily bucket label" || fail "daily bucket"
+assert_contains "session last-active is the last in-window message day"      "$rep" "2026-09-03"
+assert_not_contains "--since drops the session's August agent"               "$rep" "haiku-4.5"
+
+rep=$(bash "$BIN/credit-report.sh" --no-color --all --until 2026-08-31 2>/dev/null)
+assert_contains "--until keeps only older messages" "$rep" "TOTAL  \$2.00"
+assert_contains "--until spans both old months"     "$rep" "2 projects · 2 sessions"
+
+rep=$(bash "$BIN/credit-report.sh" --no-color --since 2026-08-01 --until 2026-08-31 2>/dev/null)
+assert_contains "--since + --until isolate one month" "$rep" "TOTAL  \$1.00"
+assert_contains "window label"                        "$rep" "2026-08-01 → 2026-08-31"
+
+bash "$BIN/credit-report.sh" --since 2026-09-01 --until 2026-08-01 >/dev/null 2>&1
+[ $? -eq 2 ] && ok "inverted window rejected" || fail "inverted window"
+bash "$BIN/credit-report.sh" --since 2030-01-01 >/dev/null 2>&1
+[ $? -eq 1 ] && ok "empty window reports no usage" || fail "empty window"
+
+j=$(bash "$BIN/credit-report.sh" --json --since 2026-09-01 2>/dev/null)
+jq -e '.total.cost==10.5 and .since=="2026-09-01" and .by_period.granularity=="day"
+       and (.by_period.buckets|length)==1 and .by_period.buckets[0].period=="2026-09-03"' <<< "$j" >/dev/null \
+    && ok "--json carries the window and its buckets" || fail "--json window" "$(printf '%s' "$j" | head -c 300)"
+
+echo "== credit-report: messages with no usable timestamp =="
+C2="$SCRATCH/claude2"; mkdir -p "$C2/projects/-tmp-gamma"
+G="$C2/projects/-tmp-gamma/s-cccc.jsonl"; : > "$G"
+printf '{"type":"user","cwd":"/tmp/gamma","message":{"role":"user","content":"hi"}}\n' >> "$G"
+mk_asst "$G" m8 claude-haiku-4-5 1000000 0 0 2026-09-02   # $1.00 dated
+mk_asst "$G" m9 claude-haiku-4-5 2000000 0 0 none         # $2.00 undated
+rep=$(CLAUDE_CONFIG_DIR="$C2" bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
+assert_contains "undated messages still count all-time" "$rep" "TOTAL  \$3.00"
+printf '%s' "$rep" | grep -Eq 'undated +\$2\.00' && ok "undated shown as its own bucket" || fail "undated bucket"
+rep=$(CLAUDE_CONFIG_DIR="$C2" bash "$BIN/credit-report.sh" --no-color --since 2026-09-01 2>/dev/null)
+assert_contains "a window drops what it cannot place" "$rep" "TOTAL  \$1.00"
+
+echo "== credit-report: caching =="
+# one file per session priced so far: alpha + beta, plus gamma from the run above
+ncache=$(ls "$XDG_CACHE_HOME/claude-statusline/report/" | wc -l)
+[ "$ncache" -eq 3 ] && ok "one cache file per session" || fail "cache files" "$ncache"
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-z.jsonl" m5 claude-sonnet-5 1000000 0 0   # new subagent → cache key changes
 rep=$(bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
 assert_contains "cache invalidates when a subagent file appears" "$rep" "TOTAL  \$14.50"

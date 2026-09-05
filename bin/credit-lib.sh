@@ -54,6 +54,12 @@
 #   Both functions accept several paths (main transcript + subagent transcripts)
 #   and price them as one set; the first path must exist.
 #
+#   emit_credit_rows_dated_for_jsonl <path>...
+#       Prints one line per deduped assistant message:
+#           day\tbucket\tinput_cost\toutput_cost
+#       Use this for any report over a time window — see the note on the
+#       function itself for why a file mtime is not a usable substitute.
+#
 #   emit_credit_rows_for_jsonl <path>...
 #       Prints one line per deduped assistant message:
 #           bucket\tinput_cost\toutput_cost
@@ -61,16 +67,33 @@
 #       "+fast" suffix for fast-mode responses. Used for per-model breakdowns.
 
 # ---------------------------------------------------------------------------
+# _CREDIT_DAY_EXPR — jq expression mapping a record to the LOCAL calendar day
+# ("YYYY-MM-DD") its message was produced on, or "" when there is no usable
+# timestamp. Local, not UTC, because callers filter with local dates. Detected
+# once: strflocaltime is jq 1.6+, and an undefined function is a COMPILE error,
+# so `try` cannot guard it — probe instead and fall back to the raw UTC prefix.
+# ---------------------------------------------------------------------------
+if jq -n 'now|strflocaltime("%Y")' >/dev/null 2>&1; then
+    _CREDIT_DAY_EXPR='(.timestamp // "" | if type=="string" and (test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))
+                       then (sub("\\.[0-9]+"; "") | sub("[+-][0-9]{2}:?[0-9]{2}$"; "Z")
+                             | (try (fromdateiso8601 | strflocaltime("%Y-%m-%d")) catch .[0:10]))
+                       else "" end)'
+else
+    _CREDIT_DAY_EXPR='(.timestamp // "" | if type=="string" then .[0:10] else "" end)'
+fi
+
+# ---------------------------------------------------------------------------
 # _jsonl_to_tsv <path>... — internal: grep+jq one or more JSONL files (a main
 # transcript plus its subagent transcripts, typically), output one TSV row per
 # deduped assistant message:
-#   input\tcache_read\tcache_create\toutput\tcc_1h\tcc_5m\tmodel\tspeed
+#   input\tcache_read\tcache_create\toutput\tcc_1h\tcc_5m\tmodel\tspeed\tday
 # Message ids are unique across files, so the dedup is safe over the whole set.
 # ---------------------------------------------------------------------------
 _jsonl_to_tsv() {
     [ "$#" -gt 0 ] || return 0
     { grep -h -F '"type":"assistant"' -- "$@" 2>/dev/null || true; } \
-        | jq -rs '
+        | jq -rs "
+            def day: ${_CREDIT_DAY_EXPR};"'
             reduce .[] as $line (
               {};
               if ($line.message.id != null and $line.message.usage != null
@@ -78,7 +101,8 @@ _jsonl_to_tsv() {
                   and (.[$line.message.id] == null))
               then .[$line.message.id] = {
                      usage: $line.message.usage,
-                     model: ($line.message.model // "")
+                     model: ($line.message.model // ""),
+                     day:   ($line | day)
                    }
               else .
               end
@@ -92,7 +116,8 @@ _jsonl_to_tsv() {
                 (.value.usage.cache_creation.ephemeral_1h_input_tokens // 0 | tostring),
                 (.value.usage.cache_creation.ephemeral_5m_input_tokens // 0 | tostring),
                 (.value.model // ""),
-                (.value.usage.speed // "")
+                (.value.usage.speed // ""),
+                (.value.day // "")
               ]
             | @tsv' 2>/dev/null
 }
@@ -190,6 +215,32 @@ compute_credit_for_jsonl() {
               total = in_cost + out_cost
               if (total > 0)
                 printf "%.4f\t%.4f\t%.4f", in_cost, out_cost, total
+            }'
+}
+
+# ---------------------------------------------------------------------------
+# emit_credit_rows_dated_for_jsonl <path>...
+# Prints one line per deduped assistant message:
+#   day<TAB>bucket<TAB>input_cost<TAB>output_cost
+# day is the LOCAL calendar day the message was produced ("unknown" when the
+# record carries no usable timestamp). Any report over a time window must use
+# this rather than a file mtime: one session can span months, so billing its
+# whole cost to the day its file was last touched is simply wrong.
+# ---------------------------------------------------------------------------
+emit_credit_rows_dated_for_jsonl() {
+    [ -f "${1:-}" ] || return
+
+    _jsonl_to_tsv "$@" \
+        | awk -F'\t' "$_AWK_RATE_FN"'
+            {
+              ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
+              cc1h = $5+0; cc5m = $6+0
+              parse_model($7)
+              set_rates(FAMILY, MAJOR, MINOR, $8)
+              in_c  = (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
+              out_c = (to*ro)                                           / 1000000
+              if (in_c + out_c == 0) next
+              printf "%s\t%s\t%.6f\t%.6f\n", ($9=="" ? "unknown" : $9), bucket_label($8), in_c, out_c
             }'
 }
 
