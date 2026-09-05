@@ -45,7 +45,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 
 ### Companion tools
 
-- **`credit-report.sh`** — one colored report for the whole account: total, by model, by project, by session, **with subagent transcripts billed to the session that spawned them** (on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
+- **`credit-report.sh`** — one colored report for the whole account: total, by model, by project, by session, **with every subagent and workflow-agent transcript billed to the session that spawned them** (`<session>/subagents/**`; on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Sessions that used several models get a `↳` line with the per-model split. Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
 - **`credit-project.sh`** — totals cost across every session in one project directory, with per-model breakdown.
 - **`credit-summary.sh`** — flat cross-project totals with date filtering.
 
@@ -168,6 +168,7 @@ bash ~/.claude/credit-report.sh --json | jq .total  # machine-readable
 
  ~/threema                                 $8,317.13  ██████████░░░░░░░░░░  51.6%    7 sess · 2026-09-05
      380caecb  threema-desktop                     $5,009.45  opus-4.8       2026-07-23 284 agents
+               ↳ opus-4.8 $4,410.12 (88%) · opus-5.0 $512.30 (10%) · sonnet-5.0 $87.03 (2%)
      2f5588b3  threema-server                      $3,184.03  opus-5.0       2026-09-05  83 agents
      + 2 more session(s) · $5.19
 ```

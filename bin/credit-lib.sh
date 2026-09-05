@@ -74,6 +74,7 @@ _jsonl_to_tsv() {
             reduce .[] as $line (
               {};
               if ($line.message.id != null and $line.message.usage != null
+                  and ($line.message.model // "") != "<synthetic>"
                   and (.[$line.message.id] == null))
               then .[$line.message.id] = {
                      usage: $line.message.usage,

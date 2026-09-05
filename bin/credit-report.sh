@@ -86,8 +86,6 @@ else
 fi
 
 # --- helpers ------------------------------------------------------------------
-mtime_of() { stat -c '%Y' -- "$@" 2>/dev/null || stat -f '%m' -- "$@" 2>/dev/null; }
-size_of()  { stat -c '%s' -- "$1" 2>/dev/null || stat -f '%z' -- "$1" 2>/dev/null; }
 fmt_day()  { date -d "@$1" +%Y-%m-%d 2>/dev/null || date -r "$1" +%Y-%m-%d 2>/dev/null; }
 
 # Resolve the optional project argument to a directory under PROJECTS_ROOT.
@@ -108,7 +106,7 @@ mkdir -p "$CACHE_DIR" 2>/dev/null && chmod 0700 "$CACHE_DIR" 2>/dev/null
 
 # --- collect ------------------------------------------------------------------
 # master TSV, two record kinds:
-#   ROW  <proj> <sid> <last_mtime> <nsub> <bucket> <in> <out>
+#   ROW  <proj> <sid> <last_mtime> <nagents> <bucket> <in> <out>
 #   META <proj> <sid> <last_mtime> <nsub> <title> <cwd>
 master=$(mktemp); trap 'rm -f "$master"' EXIT
 
@@ -130,23 +128,34 @@ for main in "${sessions[@]}"; do
     i=$((i+1))
     pdir="$(dirname "$main")"; pname="$(basename "$pdir")"
     sid="$(basename "$main" .jsonl)"
-    subdir="$pdir/$sid/subagents"
+    sessdir="$pdir/$sid"
 
-    subs=()
-    if [ -d "$subdir" ]; then
-        while IFS= read -r -d '' f; do subs+=("$f"); done < <(find "$subdir" -maxdepth 1 -name '*.jsonl' -print0 2>/dev/null)
+    # Every transcript under the session dir belongs to this session: direct
+    # subagents (subagents/agent-*.jsonl), workflow agents
+    # (subagents/workflows/wf_*/agent-*.jsonl) and workflow journals. Journals
+    # carry no assistant messages so they price to zero; only agent-*.jsonl
+    # files count as "agents".
+    subs=(); nsub=0
+    if [ -d "$sessdir" ]; then
+        while IFS= read -r -d '' f; do
+            subs+=("$f")
+            case "$(basename "$f")" in agent-*.jsonl) nsub=$((nsub+1)) ;; esac
+        done < <(find "$sessdir" -name '*.jsonl' -print0 2>/dev/null)
     fi
-    nsub=${#subs[@]}
 
-    main_mtime=$(mtime_of "$main"); main_size=$(size_of "$main")
-    last=$main_mtime; sub_max=0
-    if [ "$nsub" -gt 0 ]; then
-        sub_max=$(mtime_of "${subs[@]}" | sort -n | tail -1)
+    # Cache key: main mtime+size, plus file count, summed size and newest mtime
+    # over the subagent set (an agent file can grow without the count changing).
+    read -r main_mtime main_size < <(stat -c '%Y %s' -- "$main" 2>/dev/null || stat -f '%m %z' -- "$main" 2>/dev/null)
+    last=$main_mtime; sub_sig="0:0:0"
+    if [ "${#subs[@]}" -gt 0 ]; then
+        sub_sig=$( { stat -c '%Y %s' -- "${subs[@]}" 2>/dev/null || stat -f '%m %z' -- "${subs[@]}" 2>/dev/null; } \
+                   | awk '{ if ($1>mx) mx=$1; sz+=$2; n++ } END { printf "%d:%d:%d", n, sz, mx }')
+        sub_max="${sub_sig##*:}"
         [ "$sub_max" -gt "$last" ] 2>/dev/null && last=$sub_max
     fi
     [ "$since_epoch" -gt 0 ] && [ "$last" -lt "$since_epoch" ] && continue
 
-    key="${main_mtime}:${main_size}:${nsub}:${sub_max}"
+    key="${main_mtime}:${main_size}:${nsub}:${sub_sig}"
     safe_id=$(printf '%s' "$sid" | tr -c 'a-zA-Z0-9_-' '_')
     cache="$CACHE_DIR/${pname}__${safe_id}.tsv"
 
@@ -239,10 +248,13 @@ awk -F'\t' '
       printf "PROJ\t%s\t%.4f\t%.4f\t%d\t%d\t%s\n", p, pin[p], pout[p], n, plast[p], cwd[p]
     }
     for (s in ses_in) {
-      # dominant model for the session
+      # dominant model for the session + the full mix (SMOD rows, cost per model)
       best=""; bv=-1; nm=split(substr(smodels[s],2), arr, SUBSEP)
-      for (k=1;k<=nm;k++) if (sm[s,arr[k]]>bv) { bv=sm[s,arr[k]]; best=arr[k] }
-      printf "SESS\t%s\t%s\t%.4f\t%.4f\t%d\t%d\t%s\t%s\n", proj_of[s], s, ses_in[s], ses_out[s], last[s], agents[s], best, title[s]
+      for (k=1;k<=nm;k++) {
+        if (sm[s,arr[k]]>bv) { bv=sm[s,arr[k]]; best=arr[k] }
+        printf "SMOD\t%s\t%s\t%.4f\n", s, arr[k], sm[s,arr[k]]
+      }
+      printf "SESS\t%s\t%s\t%.4f\t%.4f\t%d\t%d\t%s\t%d\t%s\n", proj_of[s], s, ses_in[s], ses_out[s], last[s], agents[s], best, nm, title[s]
     }
   }' "$master" > "$agg"
 
@@ -295,20 +307,30 @@ grep '^PROJ' "$agg" | awk -F'\t' '{printf "%s\t%.4f\t%.4f\t%.4f\t%d\t%d\t%s\n", 
     echo
     printf ' %s%s%-38s%s %s%12s%s  %s %s%s%s  %s%3d sess · %s%s\n' "$B" "$C_P" "$(trunc "$name" 38)" "$R" "$C_M" "$(money "$pt")" "$R" "$(bar "$pt" "$total" 20)" "$D" "$(pct "$pt" "$total")" "$R" "$D" "$pn" "$(fmt_day "$plast")" "$R"
     [ "$projects_only" -eq 1 ] && continue
-    grep -F "SESS	$p	" "$agg" | awk -F'\t' '{printf "%s\t%.4f\t%.4f\t%.4f\t%d\t%d\t%s\t%s\n", $3, $4, $5, $4+$5, $6, $7, $8, $9}' | sort -t$'\t' -k4,4gr \
-    | awk -F'\t' -v top="$top" -v P="$p" '
+    grep -F "SESS	$p	" "$agg" | awk -F'\t' '{printf "%s\t%.4f\t%.4f\t%.4f\t%d\t%d\t%s\t%d\t%s\n", $3, $4, $5, $4+$5, $6, $7, $8, $9, $10}' | sort -t$'\t' -k4,4gr \
+    | awk -F'\t' -v top="$top" '
         NR<=top { print; next }
         { rest+=$4; nrest++ }
         END { if (nrest>0) printf "MORE\t%d\t%.4f\n", nrest, rest }' \
-    | while IFS=$'\t' read -r s1 s2 s3 s4 s5 s6 s7 s8; do
+    | while IFS=$'\t' read -r s1 s2 s3 s4 s5 s6 s7 s8 s9; do
         if [ "$s1" = "MORE" ]; then
             printf '     %s+ %d more session(s) · %s%s\n' "$D" "$s2" "$(money "$s3")" "$R"
             continue
         fi
-        t="$s8"; [ -z "$t" ] && t="(untitled)"
-        ag=""; [ "$s6" -gt 0 ] 2>/dev/null && ag="$(printf '%2d agents' "$s6")"
+        t="$s9"; [ -z "$t" ] && t="(untitled)"
+        ag=""; [ "$s6" -gt 0 ] 2>/dev/null && ag="$(printf '%3d agents' "$s6")"
         printf '     %s%s%s  %s%-34s%s %s%10s%s  %s%-14s%s %s%s%s %s%s%s\n' \
             "$D" "${s1:0:8}" "$R" "$C_H" "$(trunc "$t" 34)" "$R" "$C_M" "$(money "$s4")" "$R" "$D" "$s7" "$R" "$C_G" "$(fmt_day "$s5")" "$R" "$D" "$ag" "$R"
+        # Model mix: one dim continuation line when more than one model worked
+        # in the session (main conversation + all its agents), by spend.
+        if [ "$s8" -gt 1 ] 2>/dev/null; then
+            mix=$(grep -F "SMOD	$s1	" "$agg" | sort -t$'\t' -k4,4gr | awk -F'\t' -v tot="$s4" '
+                { pc = (tot>0) ? $4/tot*100 : 0
+                  c = sprintf("%.2f", $4); n = index(c, "."); ip = substr(c, 1, n-1); fp = substr(c, n); o = ""
+                  while (length(ip) > 3) { o = "," substr(ip, length(ip)-2) o; ip = substr(ip, 1, length(ip)-3) }
+                  printf "%s%s $%s%s (%.0f%%)", (NR>1 ? " · " : ""), $3, ip o, fp, pc }')
+            printf '               %s↳ %s%s\n' "$D" "$mix" "$R"
+        fi
     done
 done
 echo

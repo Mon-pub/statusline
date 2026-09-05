@@ -210,17 +210,22 @@ printf '{"type":"ai-title","aiTitle":"AI title"}\n{"type":"custom-title","custom
 mk_asst "$A" m1 claude-opus-5 1000000 0 100000            # $5 + $2.50 = $7.50
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-x.jsonl" m2 claude-sonnet-5 1000000 0 0   # $2.00 (subagent)
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-y.jsonl" m3 claude-sonnet-5 500000 0 0    # $1.00 (subagent)
+mkdir -p "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1"
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1/agent-w.jsonl" m6 claude-haiku-4-5 1000000 0 0   # $1.00 (workflow agent)
+printf '{"type":"workflow-journal","note":"no assistant messages here"}\n' > "$PR/-tmp-alpha/s-aaaa/subagents/workflows/wf_1/journal.jsonl"
+mk_asst "$A" msyn "<synthetic>" 1000000 0 1000000          # must be ignored, not priced at Opus rates
 Bf="$PR/-tmp-beta/s-bbbb.jsonl"; : > "$Bf"
 printf '{"type":"user","cwd":"/tmp/beta","message":{"role":"user","content":"hi"}}\n' >> "$Bf"
 mk_asst "$Bf" m4 claude-haiku-4-5 1000000 0 0             # $1.00
 touch -d '2026-01-01' "$Bf" 2>/dev/null || touch -t 202601010000 "$Bf"
 rep=$(bash "$BIN/credit-report.sh" --no-color --all 2>/dev/null)
-assert_contains "total = main + subagents + other project" "$rep" "TOTAL  \$11.50"
-assert_contains "counts (2 projects, 2 sessions, 2 agents)"  "$rep" "2 projects · 2 sessions · 2 agents"
+assert_contains "total = main + subagents + workflow agent + other project (synthetic ignored)" "$rep" "TOTAL  \$12.50"
+assert_contains "counts: journals are not agents"            "$rep" "2 projects · 2 sessions · 3 agents"
 assert_contains "project path from cwd"                     "$rep" "/tmp/alpha"
-printf '%s' "$rep" | grep -Eq 's-aaaa +Alpha custom +\$10\.50' && ok "session line: custom title beats AI title" || fail "session title line" "$(printf '%s' "$rep" | grep s-aaaa)"
-assert_contains "session cost includes subagents"           "$rep" "\$10.50  opus-5.0"
-assert_contains "agent count shown"                          "$rep" "2 agents"
+printf '%s' "$rep" | grep -Eq 's-aaaa +Alpha custom +\$11\.50' && ok "session line: custom title beats AI title" || fail "session title line" "$(printf '%s' "$rep" | grep s-aaaa)"
+assert_contains "session cost includes subagents"           "$rep" "\$11.50  opus-5.0"
+assert_contains "model mix line for multi-model session"     "$rep" "↳ opus-5.0 \$7.50 (65%) · sonnet-5.0 \$3.00 (26%) · haiku-4.5 \$1.00 (9%)"
+assert_contains "agent count shown"                          "$rep" "3 agents"
 printf '%s' "$rep" | grep -Eq 'sonnet-5\.0 +\$3\.00 ' && ok "by-model bucket for subagent model" || fail "by-model line" "$(printf '%s' "$rep" | grep sonnet)"
 assert_contains "untitled fallback"                          "$rep" "(untitled)"
 rep=$(bash "$BIN/credit-report.sh" --no-color --since 2026-06-01 2>/dev/null)
@@ -229,17 +234,20 @@ assert_not_contains "--since: beta gone"                    "$rep" "/tmp/beta"
 rep=$(bash "$BIN/credit-report.sh" --no-color --projects 2>/dev/null)
 assert_not_contains "--projects hides session rows"         "$rep" "Alpha custom"
 rep=$(bash "$BIN/credit-report.sh" --no-color --top 0 2>/dev/null)
-assert_contains "--top 0 folds every session"               "$rep" "+ 1 more session(s) · \$10.50"
+assert_contains "--top 0 folds every session"               "$rep" "+ 1 more session(s) · \$11.50"
 mkdir -p /tmp/alpha 2>/dev/null
 rep=$(bash "$BIN/credit-report.sh" --no-color /tmp/alpha 2>/dev/null)
-assert_contains "project filter by real path (encoded)"     "$rep" "1 project · 1 session · 2 agents"
+assert_contains "project filter by real path (encoded)"     "$rep" "1 project · 1 session · 3 agents"
 j=$(bash "$BIN/credit-report.sh" --json 2>/dev/null)
-jq -e '.total.cost==11.5 and .sessions_count==2 and .agents_count==2 and (.projects[0].sessions[0].by_model|map(.model)|sort)==["opus-5.0","sonnet-5.0"] and .projects[0].sessions[0].title=="Alpha custom"' <<< "$j" >/dev/null \
+jq -e '.total.cost==12.5 and .sessions_count==2 and .agents_count==3 and (.projects[0].sessions[0].by_model|map(.model)|sort)==["haiku-4.5","opus-5.0","sonnet-5.0"] and .projects[0].sessions[0].title=="Alpha custom"' <<< "$j" >/dev/null \
     && ok "--json structure and totals" || fail "--json" "$(printf '%s' "$j" | head -c 400)"
 ncache=$(ls "$XDG_CACHE_HOME/claude-statusline/report/" | wc -l); [ "$ncache" -eq 2 ] && ok "one cache file per session" || fail "cache files" "$ncache"
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-z.jsonl" m5 claude-sonnet-5 1000000 0 0   # new subagent → cache key changes
 rep=$(bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
-assert_contains "cache invalidates when a subagent file appears" "$rep" "TOTAL  \$13.50"
+assert_contains "cache invalidates when a subagent file appears" "$rep" "TOTAL  \$14.50"
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-z.jsonl" m7 claude-sonnet-5 1000000 0 0   # same file grows, count unchanged
+rep=$(bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
+assert_contains "cache invalidates when a subagent file grows"   "$rep" "TOTAL  \$16.50"
 bash "$BIN/credit-report.sh" --since 2026-13 >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad --since rejected" || fail "bad --since"
 bash "$BIN/credit-report.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 1 ] && ok "missing project rejected" || fail "missing project"
 
