@@ -45,26 +45,31 @@
 #     (empty / no model field)   → unknown
 #
 # Functions:
-#   compute_credit_for_jsonl <path>
+#   compute_credit_for_jsonl <path>...
 #       Prints three tab-separated decimals: input_cost\toutput_cost\ttotal_cost
 #       (empty string if no assistant messages found).
 #       "input_cost" aggregates all prompt-side tiers (regular + cache-read + cache-write).
 #       Callers that only need the total: compute_credit_for_jsonl … | cut -f3
 #
-#   emit_credit_rows_for_jsonl <path>
+#   Both functions accept several paths (main transcript + subagent transcripts)
+#   and price them as one set; the first path must exist.
+#
+#   emit_credit_rows_for_jsonl <path>...
 #       Prints one line per deduped assistant message:
 #           bucket\tinput_cost\toutput_cost
 #       bucket is "<family>-<major>.<minor>" (e.g. fable-5.1, opus-4.8), with a
 #       "+fast" suffix for fast-mode responses. Used for per-model breakdowns.
 
 # ---------------------------------------------------------------------------
-# _jsonl_to_tsv — internal: grep+jq the JSONL, output one TSV row per
+# _jsonl_to_tsv <path>... — internal: grep+jq one or more JSONL files (a main
+# transcript plus its subagent transcripts, typically), output one TSV row per
 # deduped assistant message:
 #   input\tcache_read\tcache_create\toutput\tcc_1h\tcc_5m\tmodel\tspeed
+# Message ids are unique across files, so the dedup is safe over the whole set.
 # ---------------------------------------------------------------------------
 _jsonl_to_tsv() {
-    local jsonl_path="$1"
-    { grep -F '"type":"assistant"' "$jsonl_path" 2>/dev/null || true; } \
+    [ "$#" -gt 0 ] || return 0
+    { grep -h -F '"type":"assistant"' -- "$@" 2>/dev/null || true; } \
         | jq -rs '
             reduce .[] as $line (
               {};
@@ -167,10 +172,9 @@ _AWK_RATE_FN='
 # Prints nothing if no assistant messages / no usage data.
 # ---------------------------------------------------------------------------
 compute_credit_for_jsonl() {
-    local jsonl_path="$1"
-    [ -f "$jsonl_path" ] || return
+    [ -f "${1:-}" ] || return
 
-    _jsonl_to_tsv "$jsonl_path" \
+    _jsonl_to_tsv "$@" \
         | awk -F'\t' "$_AWK_RATE_FN"'
             BEGIN { in_cost = 0; out_cost = 0 }
             {
@@ -194,10 +198,9 @@ compute_credit_for_jsonl() {
 #   bucket<TAB>input_cost<TAB>output_cost
 # ---------------------------------------------------------------------------
 emit_credit_rows_for_jsonl() {
-    local jsonl_path="$1"
-    [ -f "$jsonl_path" ] || return
+    [ -f "${1:-}" ] || return
 
-    _jsonl_to_tsv "$jsonl_path" \
+    _jsonl_to_tsv "$@" \
         | awk -F'\t' "$_AWK_RATE_FN"'
             {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0

@@ -45,8 +45,9 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 
 ### Companion tools
 
-- **`credit-project.sh`** — totals cost across every session in a project directory, with per-model breakdown.
-- **`credit-summary.sh`** — cross-project totals with date filtering.
+- **`credit-report.sh`** — one colored report for the whole account: total, by model, by project, by session, **with subagent transcripts billed to the session that spawned them** (on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
+- **`credit-project.sh`** — totals cost across every session in one project directory, with per-model breakdown.
+- **`credit-summary.sh`** — flat cross-project totals with date filtering.
 
 ## Requirements
 
@@ -126,7 +127,8 @@ Then add to `~/.claude/settings.json`:
 bin/
   statusline-command.sh   — main entry point (single-jq extraction, multi-line colored output)
   display-lib.sh          — ANSI colors, bars, reset/countdown formatting, cache sweep
-  credit-lib.sh           — version-aware per-model pricing (shared)
+  credit-lib.sh           — version-aware per-model pricing (shared; prices main + subagent files as one set)
+  credit-report.sh        — account report: total / by model / by project / by session (+subagents)
   credit-project.sh       — project-wide cost totaling
   credit-summary.sh       — cross-project cost summary with date filtering
   backup-bridge.sh        — integration: reads backup state, triggers node backup
@@ -142,6 +144,35 @@ tests/
   fixtures/               — real Claude Code 2.1.261 stdin sample (sanitized)
 install.sh                — copies everything + wires settings.json
 ```
+
+## Account spend report
+
+```bash
+bash ~/.claude/credit-report.sh                     # everything, all time
+bash ~/.claude/credit-report.sh --since 2026-08-01  # sessions active since a date
+bash ~/.claude/credit-report.sh --all ~/my-project  # every session of one project
+bash ~/.claude/credit-report.sh --json | jq .total  # machine-readable
+```
+
+```
+ Claude Code spend report  2026-09-06 · all time · offline estimate
+ ──────────────────────────────────────────────────────────────────────────────────────
+ TOTAL  $16,107.03     in $14,412.48 · out $1,694.55   15 projects · 45 sessions · 675 agents
+
+ BY MODEL
+   opus-4.8            $8,364.48  ████████████████░░░░░░░░░░░░░░  51.9%  in $7,606.38 · out $758.11
+   fable-5.0           $3,275.99  ██████░░░░░░░░░░░░░░░░░░░░░░░░  20.3%  in $2,800.09 · out $475.90
+   …
+
+ BY PROJECT (sessions folded to top 5 by spend; --all shows every one)
+
+ ~/threema                                 $8,317.13  ██████████░░░░░░░░░░  51.6%    7 sess · 2026-09-05
+     380caecb  threema-desktop                     $5,009.45  opus-4.8       2026-07-23 284 agents
+     2f5588b3  threema-server                      $3,184.03  opus-5.0       2026-09-05  83 agents
+     + 2 more session(s) · $5.19
+```
+
+Figures are API-equivalent (published per-token rates); on a subscription they are the value consumed, not a bill. The first run prices every transcript (a few seconds per GB); results are cached under `~/.cache/claude-statusline/report/` keyed on file mtimes and sizes, so later runs are instant until a transcript changes (`--refresh` forces a rebuild).
 
 ## Project-wide cost total
 

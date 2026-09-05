@@ -198,6 +198,51 @@ node "$NODE/context-breakdown.mjs" "$B" "../evil" 2>/dev/null; [ ! -e "$XDG_CACH
 FL="$SCRATCH/fill.json"; jq -c --arg t "$B" '.session_id="brk-1" | .transcript_path=$t' "$M" > "$FL"
 out=$(render "$FL"); assert_contains "fill line rendered from cache" "$out" "fill: chat In+Out"
 
+echo "== credit-report (account report) =="
+# Synthetic projects root: two projects; the first has a session with a subagent
+# transcript and a custom title, the second is older than the --since date.
+PR="$CLAUDE_CONFIG_DIR/projects"; mkdir -p "$PR/-tmp-alpha/s-aaaa/subagents" "$PR/-tmp-beta"
+mk_asst() { # <file> <msgid> <model> <in> <read> <out>
+    printf '{"type":"assistant","message":{"id":"%s","model":"%s","usage":{"input_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":0,"output_tokens":%d}}}\n' "$2" "$3" "$4" "$5" "$6" >> "$1"; }
+A="$PR/-tmp-alpha/s-aaaa.jsonl"; : > "$A"
+printf '{"type":"user","cwd":"/tmp/alpha","message":{"role":"user","content":"hi"}}\n' >> "$A"
+printf '{"type":"ai-title","aiTitle":"AI title"}\n{"type":"custom-title","customTitle":"Alpha custom"}\n' >> "$A"
+mk_asst "$A" m1 claude-opus-5 1000000 0 100000            # $5 + $2.50 = $7.50
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-x.jsonl" m2 claude-sonnet-5 1000000 0 0   # $2.00 (subagent)
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-y.jsonl" m3 claude-sonnet-5 500000 0 0    # $1.00 (subagent)
+Bf="$PR/-tmp-beta/s-bbbb.jsonl"; : > "$Bf"
+printf '{"type":"user","cwd":"/tmp/beta","message":{"role":"user","content":"hi"}}\n' >> "$Bf"
+mk_asst "$Bf" m4 claude-haiku-4-5 1000000 0 0             # $1.00
+touch -d '2026-01-01' "$Bf" 2>/dev/null || touch -t 202601010000 "$Bf"
+rep=$(bash "$BIN/credit-report.sh" --no-color --all 2>/dev/null)
+assert_contains "total = main + subagents + other project" "$rep" "TOTAL  \$11.50"
+assert_contains "counts (2 projects, 2 sessions, 2 agents)"  "$rep" "2 projects · 2 sessions · 2 agents"
+assert_contains "project path from cwd"                     "$rep" "/tmp/alpha"
+printf '%s' "$rep" | grep -Eq 's-aaaa +Alpha custom +\$10\.50' && ok "session line: custom title beats AI title" || fail "session title line" "$(printf '%s' "$rep" | grep s-aaaa)"
+assert_contains "session cost includes subagents"           "$rep" "\$10.50  opus-5.0"
+assert_contains "agent count shown"                          "$rep" "2 agents"
+printf '%s' "$rep" | grep -Eq 'sonnet-5\.0 +\$3\.00 ' && ok "by-model bucket for subagent model" || fail "by-model line" "$(printf '%s' "$rep" | grep sonnet)"
+assert_contains "untitled fallback"                          "$rep" "(untitled)"
+rep=$(bash "$BIN/credit-report.sh" --no-color --since 2026-06-01 2>/dev/null)
+assert_contains "--since drops the old project"             "$rep" "1 project · 1 session"
+assert_not_contains "--since: beta gone"                    "$rep" "/tmp/beta"
+rep=$(bash "$BIN/credit-report.sh" --no-color --projects 2>/dev/null)
+assert_not_contains "--projects hides session rows"         "$rep" "Alpha custom"
+rep=$(bash "$BIN/credit-report.sh" --no-color --top 0 2>/dev/null)
+assert_contains "--top 0 folds every session"               "$rep" "+ 1 more session(s) · \$10.50"
+mkdir -p /tmp/alpha 2>/dev/null
+rep=$(bash "$BIN/credit-report.sh" --no-color /tmp/alpha 2>/dev/null)
+assert_contains "project filter by real path (encoded)"     "$rep" "1 project · 1 session · 2 agents"
+j=$(bash "$BIN/credit-report.sh" --json 2>/dev/null)
+jq -e '.total.cost==11.5 and .sessions_count==2 and .agents_count==2 and (.projects[0].sessions[0].by_model|map(.model)|sort)==["opus-5.0","sonnet-5.0"] and .projects[0].sessions[0].title=="Alpha custom"' <<< "$j" >/dev/null \
+    && ok "--json structure and totals" || fail "--json" "$(printf '%s' "$j" | head -c 400)"
+ncache=$(ls "$XDG_CACHE_HOME/claude-statusline/report/" | wc -l); [ "$ncache" -eq 2 ] && ok "one cache file per session" || fail "cache files" "$ncache"
+mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-z.jsonl" m5 claude-sonnet-5 1000000 0 0   # new subagent → cache key changes
+rep=$(bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
+assert_contains "cache invalidates when a subagent file appears" "$rep" "TOTAL  \$13.50"
+bash "$BIN/credit-report.sh" --since 2026-13 >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad --since rejected" || fail "bad --since"
+bash "$BIN/credit-report.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 1 ] && ok "missing project rejected" || fail "missing project"
+
 echo "== isolation =="
 # The renderer spawns background backup triggers; give them a moment, then make
 # sure nothing landed outside the scratch dir.

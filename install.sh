@@ -55,7 +55,7 @@ echo "Installing to: $TARGET"
 # --- Bash scripts ---
 echo ""
 echo "=== Bash scripts ==="
-for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh display-lib.sh backup-bridge.sh context-lib.sh; do
+for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh credit-report.sh display-lib.sh backup-bridge.sh context-lib.sh; do
     src="${SCRIPT_DIR}/bin/${f}"
     dst="${TARGET}/${f}"
     if [ ! -f "$src" ]; then
