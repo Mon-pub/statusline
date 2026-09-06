@@ -1,5 +1,5 @@
 #!/bin/bash
-# credit-lib.sh — shared pricing logic for claude-statusline and credit-project.
+# credit-lib.sh — shared pricing logic for the statusline and the credit report.
 #
 # Pricing (per 1M tokens; verified 2026-09-05 from
 # https://platform.claude.com/docs/en/about-claude/pricing).

@@ -46,8 +46,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 ### Companion tools
 
 - **`credit-report.sh`** — one colored report for the whole account: total, over time, by model, by project, by session, **with every subagent and workflow-agent transcript billed to the session that spawned them** (`<session>/subagents/**`; on a heavy multi-agent setup those are most of the spend and the older tools never counted them). Every message is counted **on the day it was produced**, so `--since`/`--until` report money spent in the window rather than whole sessions touched in it. Sessions that used several models get a `↳` line with the per-model split. Cached per session, so it re-runs in under a second. `--since`, `--top`, `--all`, `--projects`, `--json`, or a project path.
-- **`credit-project.sh`** — totals cost across every session in one project directory, with per-model breakdown.
-- **`credit-summary.sh`** — flat cross-project totals with date filtering.
+- **`credit-project.sh`**, **`credit-summary.sh`** — deprecated. Both are now one-line wrappers that run `credit-report.sh`, so old commands keep working and can no longer report a different number. See [Deprecated cost tools](#deprecated-cost-tools).
 
 ## Requirements
 
@@ -129,8 +128,8 @@ bin/
   display-lib.sh          — ANSI colors, bars, reset/countdown formatting, cache sweep
   credit-lib.sh           — version-aware per-model pricing (shared; prices main + subagent files as one set)
   credit-report.sh        — account report: total / by model / by project / by session (+subagents)
-  credit-project.sh       — project-wide cost totaling
-  credit-summary.sh       — cross-project cost summary with date filtering
+  credit-project.sh       — deprecated wrapper → credit-report.sh --all <dir>
+  credit-summary.sh       — deprecated wrapper → credit-report.sh --all [--since d]
   backup-bridge.sh        — integration: reads backup state, triggers node backup
   context-lib.sh          — context-fill breakdown: reads node cache, spawns parse
 node/
@@ -185,33 +184,35 @@ Buckets are months once the span passes a month, single days below that, and the
 
 Why not filter on file modification time: a session can run for months, and Claude Code touches its transcript every time you resume it. One session here holds work from 23 May to 26 August in a file last written on 5 September — filtering on the file date billed all of it to September. `--since`/`--until` therefore slice on each message's own timestamp.
 
-## Project-wide cost total
+## Deprecated cost tools
+
+`credit-project.sh` and `credit-summary.sh` came first and each carried its own
+copy of the accounting. Both were wrong in ways that were hard to notice:
+
+- Neither looked inside `<session>/subagents/**`, so subagent and workflow-agent
+  spend — most of the bill on a multi-agent setup — was simply missing.
+- `credit-summary.sh` picked sessions by transcript modification time and then
+  billed each one's whole lifetime into the window. Claude Code rewrites a
+  transcript every time you resume it, so months-old work landed in today.
+
+Those two errors pull in opposite directions, so the totals looked plausible
+while being wrong. On one real project asked for September, `credit-summary.sh`
+said $849.72, `credit-report.sh` said $723.78, and the project's entire history
+was $1,642.20.
+
+Rather than keep three pipelines that have to agree forever, both names are now
+wrappers that exec `credit-report.sh`. Every old invocation still works and
+prints a note naming the modern equivalent:
 
 ```bash
-bash ~/.claude/credit-project.sh ~/.claude/projects/-home-me-my-project
+bash ~/.claude/credit-project.sh ~/my-project      # → credit-report.sh --all ~/my-project
+bash ~/.claude/credit-summary.sh                   # → credit-report.sh --all
+bash ~/.claude/credit-summary.sh 2026-05-01        # → credit-report.sh --all --since 2026-05-01
+bash ~/.claude/credit-summary.sh 2026-05-01 ~/proj # → …--since 2026-05-01 ~/proj
 ```
 
-Output:
-
-```
-01a2…       $0.4210  (in:$0.0832  out:$0.3378)
-02b3…       $1.2473  (in:$0.3091  out:$0.9382)
-TOTAL       $1.6867  (in:$0.3963  out:$1.2904)
-
-MODELS:
-  fable-5.1      $  1.5112  (in:$0.3471  out:$1.1641  89.6%)
-  opus-4.8       $  0.1755  (in:$0.0492  out:$0.1263  10.4%)
-```
-
-## Cross-project cost summary
-
-```bash
-bash ~/.claude/credit-summary.sh                  # all sessions, all time
-bash ~/.claude/credit-summary.sh 2026-05-01        # sessions since May 1
-bash ~/.claude/credit-summary.sh 2026-05-01 ~/.claude/projects/-home-me-proj  # since date, one project
-```
-
-Date filtering uses file modification time — fast, no JSONL parsing. Scans all projects under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`) by default.
+Flags are forwarded, so `credit-summary.sh 2026-05-01 --json` works. Prefer
+`credit-report.sh` directly in anything new.
 
 ## Pricing (as of 2026-09-05)
 

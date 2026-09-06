@@ -57,3 +57,12 @@ node 22, jq 1.7, bash 5.2. Live stdin sample captured to `.sample-stdin.json`
   (the remainder is untranscribed title-generation calls on the haiku slot).
 - Not done / out of scope: submodule bump for reference/claude-context-visualizer
   (reference material only; report upstream state instead).
+- 2026-09-06 Folded `credit-project.sh` and `credit-summary.sh` into
+  `credit-report.sh`. Both were missing every `<session>/subagents/**`
+  transcript, and `credit-summary.sh` date-filtered on file mtime and then
+  billed whole session lifetimes into the window (the bug fixed for the report
+  in f0abf22). Measured on ~/google-earth for `--since 2026-09-01`:
+  summary $849.72 vs report $723.78 vs $1,642.20 all-time. Fixing them would
+  have left three pipelines that must agree forever, so both names are now thin
+  wrappers that exec the report (old argv translated, flags forwarded, note on
+  stderr). 145 checks.

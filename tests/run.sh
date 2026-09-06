@@ -308,6 +308,40 @@ assert_contains "cache invalidates when a subagent file grows"   "$rep" "TOTAL  
 bash "$BIN/credit-report.sh" --since 2026-13 >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad --since rejected" || fail "bad --since"
 bash "$BIN/credit-report.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 1 ] && ok "missing project rejected" || fail "missing project"
 
+echo "== credit-project / credit-summary: deprecated wrappers agree with the report =="
+# State of the fixture here: alpha $15.50 (main $7.50 + agents $8.00, of which
+# $1.00 is dated August), beta $1.00 in January. Grand total $16.50.
+# The point of these checks is that the old names can no longer disagree with
+# credit-report.sh, because they no longer compute anything themselves.
+ref=$(bash "$BIN/credit-report.sh" --no-color --all /tmp/alpha 2>/dev/null)
+wrap=$(bash "$BIN/credit-project.sh" /tmp/alpha 2>/dev/null)
+[ "$wrap" = "$ref" ] && ok "credit-project.sh == credit-report.sh --all <dir>" || fail "credit-project wrapper" "$wrap"
+assert_contains "credit-project counts subagents (old version could not)" "$wrap" "TOTAL  \$15.50"
+bash "$BIN/credit-project.sh" /tmp/alpha 2>&1 >/dev/null | grep -q deprecated \
+    && ok "credit-project prints a deprecation note on stderr only" || fail "credit-project notice"
+bash "$BIN/credit-project.sh" >/dev/null 2>&1; [ $? -eq 1 ] && ok "credit-project: missing arg" || fail "credit-project missing arg"
+bash "$BIN/credit-project.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 1 ] && ok "credit-project: bad dir" || fail "credit-project bad dir"
+
+ref=$(bash "$BIN/credit-report.sh" --no-color --all 2>/dev/null)
+wrap=$(bash "$BIN/credit-summary.sh" 2>/dev/null)
+[ "$wrap" = "$ref" ] && ok "credit-summary.sh == credit-report.sh --all" || fail "credit-summary wrapper" "$wrap"
+assert_contains "credit-summary all-time total" "$wrap" "TOTAL  \$16.50"
+# The regression that started all this: January work in a file touched moments
+# ago must not be billed to a September window, and the August agent must drop.
+wrap=$(bash "$BIN/credit-summary.sh" 2026-09-01 2>/dev/null)
+assert_contains "credit-summary --since slices by message day, not file mtime" "$wrap" "TOTAL  \$14.50"
+assert_not_contains "credit-summary --since drops the January session" "$wrap" "/tmp/beta"
+wrap=$(bash "$BIN/credit-summary.sh" "" /tmp/alpha 2>/dev/null)
+assert_contains "credit-summary: empty date placeholder + project dir" "$wrap" "TOTAL  \$15.50"
+wrap=$(bash "$BIN/credit-summary.sh" 2026-09-01 /tmp/alpha 2>/dev/null)
+assert_contains "credit-summary: date + project dir" "$wrap" "TOTAL  \$14.50"
+j=$(bash "$BIN/credit-summary.sh" 2026-09-01 --json 2>/dev/null)
+jq -e '.total.cost==14.5 and .since=="2026-09-01"' <<< "$j" >/dev/null \
+    && ok "credit-summary forwards unknown flags to the report" || fail "credit-summary passthru" "$(printf '%s' "$j" | head -c 200)"
+bash "$BIN/credit-summary.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 2 ] && ok "credit-summary: bad arg" || fail "credit-summary bad arg"
+bash "$BIN/credit-summary.sh" --help 2>/dev/null | grep -q 'credit-report.sh' \
+    && ok "credit-summary --help names its replacement" || fail "credit-summary help"
+
 echo "== isolation =="
 # The renderer spawns background backup triggers; give them a moment, then make
 # sure nothing landed outside the scratch dir.
