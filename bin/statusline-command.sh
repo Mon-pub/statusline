@@ -210,6 +210,44 @@ fi
 [ -n "$git_tail" ] && line1="${line1}${C_SEP}${C_DIM}git:${C_RESET} ${git_tail}"
 
 # ============================================================================
+# POLLED USAGE (usage-lib.sh): the 5h/7d figures on stdin only move when the
+# model answers in this session; the poll also sees quota burnt in other
+# sessions and windows that reset while idle. Merge per window:
+#   different reset times → the newer window wins (later reset)
+#   same window           → the higher percentage wins (usage only rises)
+# A stale poll therefore can never lower a number. Model-scoped buckets are
+# kept for the fill line below.
+# ============================================================================
+scoped_rows=()
+merge_window() { # <stdin_pct_var> <stdin_reset_var> <poll_pct> <poll_reset>
+    local pv="$1" rv="$2" ppct="$3" preset="$4"
+    local spct="${!pv}" sreset="${!rv}"
+    [[ "$ppct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
+    if [ -z "$spct" ]; then
+        printf -v "$pv" '%s' "$ppct"; [[ "$preset" =~ ^[0-9]+$ ]] && printf -v "$rv" '%s' "$preset"
+        return 0
+    fi
+    if [[ "$preset" =~ ^[0-9]+$ ]] && [[ "$sreset" =~ ^[0-9]+$ ]]; then
+        if   [ "$preset" -gt $(( sreset + 60 )) ]; then printf -v "$pv" '%s' "$ppct"; printf -v "$rv" '%s' "$preset"; return 0
+        elif [ "$sreset" -gt $(( preset + 60 )) ]; then return 0; fi
+    fi
+    awk -v a="$ppct" -v b="$spct" 'BEGIN { exit !(a > b) }' && printf -v "$pv" '%s' "$ppct"
+    return 0
+}
+while IFS=$'\t' read -r u_kind u_name u_pct u_reset u_age; do
+    case "$u_kind" in
+        W) # cap at 100 like the stdin pctb filter; skip anything older than a day
+           [[ "$u_age" =~ ^[0-9]+$ ]] && [ "$u_age" -lt 86400 ] || continue
+           awk -v p="$u_pct" 'BEGIN { exit !(p <= 100) }' || continue
+           case "$u_name" in
+               five_hour) merge_window five_pct five_reset "$u_pct" "$u_reset" ;;
+               seven_day) merge_window week_pct week_reset "$u_pct" "$u_reset" ;;
+           esac ;;
+        S) scoped_rows+=("${u_name}"$'\t'"${u_pct}"$'\t'"${u_reset}"$'\t'"${u_age}") ;;
+    esac
+done < <(usage_rows "$CACHE_BASE" "$CLAUDE_DIR")
+
+# ============================================================================
 # RATE BARS (share the ctx line): 5h / 7d / spend, each with an optional
 # "->cap Xh Ym (Day HH:MM)" burn-rate marker — shown ONLY when the current pace
 # hits 100% before the window resets. Otherwise the bar stays clean.
@@ -304,7 +342,7 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
 fi
 
 # PER-MODEL WEEKLY BARS ("7d Fable: …"): same shape as the 5h/7d bars, same
-# ->cap projection over the weekly window. Rendered from usage-lib's cache; a
+# ->cap projection over the weekly window. Rendered from the rows read above; a
 # stale cache is tagged rather than hidden, so a dead token shows as "old 3h",
 # never as a confident wrong number. Their resets join line 4 only when they
 # differ from the all-models 7d reset (usually they coincide).
@@ -329,7 +367,7 @@ while IFS=$'\t' read -r sc_name sc_pct sc_reset sc_age; do
         sc_seg="${sc_seg} ${C_DIM}old $(fmt_countdown "$sc_age")${C_RESET}"
     fi
     if [ -n "$fill_line" ]; then fill_line="${fill_line}${C_SEP}${sc_seg}"; else fill_line="$sc_seg"; fi
-done < <(usage_scoped_rows "$CACHE_BASE" "$CLAUDE_DIR")
+done < <(printf '%s\n' ${scoped_rows[@]+"${scoped_rows[@]}"})
 
 # ============================================================================
 # LINE 3: Reset times + session cost + burn rate + duration + lines changed

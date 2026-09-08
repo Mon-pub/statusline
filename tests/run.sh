@@ -350,8 +350,11 @@ printf '{"claudeAiOauth":{"accessToken":"FAKETOKEN-abc.def","expiresAt":%s}}\n' 
 UA="$SCRATCH/usage-api.json"
 # "Opus" carries a raw ESC that must be stripped; "Broken" has a
 # non-numeric percent; "Cowork" is surface-scoped, not model-scoped.
+# five_hour here belongs to an OLD window (reset in the past) → stdin's 58% must
+# win; seven_day shares stdin's window with a higher figure → 40% must win.
 jq -n --argjson n "$now" '{
   five_hour:{utilization:14,resets_at:"2026-09-08T13:50:00.440439+00:00"},
+  seven_day:{utilization:40,resets_at:(($n+260000)|todate)},
   limits:[
     {kind:"session",group:"session",percent:14,scope:null},
     {kind:"weekly_all",group:"weekly",percent:13,scope:null},
@@ -379,6 +382,20 @@ assert_contains "over-cap bucket clamps bar, keeps number" "$out" "7d Opus: ●�
 printf '%s' "$out" | sed -n 3p | grep -q '7d Fable' && ok "scoped bars live on line 3 (fill line)" || fail "line placement" "$(printf '%s' "$out" | sed -n 3p)"
 assert_contains "reset that differs from 7d is listed on line 4" "$out" "Opus resets"
 assert_not_contains "reset equal to 7d is not repeated"          "$out" "Fable resets"
+echo "== polled 5h/7d merged with stdin =="
+assert_contains "same window, poll higher → poll wins (7d 12% → 40%)" "$out" "7d: ●●●●○○○○○○ 40%"
+assert_contains "poll from an older window is ignored (5h stays 58%)" "$out" "5h: ●●●●●○○○○○ 58%"
+jq -c --argjson n "$now" '.attempted_at=$n | .five_hour={pct:3,resets_at:($n+18000)} | .seven_day.pct=5' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+out=$(render "$M")
+assert_contains "poll shows a newer window → new low figure + new reset" "$out" "5h: ○○○○○○○○○○ 3%"
+printf '%s' "$out" | grep -q "resets $(TZ=UTC date -d @$((now+18000)) '+%-I:%M%P')" && ok "5h reset time taken from the newer window" || fail "5h reset from poll" "$(printf '%s' "$out" | sed -n 4p)"
+assert_contains "same window, poll lower → stdin keeps 12%" "$out" "7d: ●○○○○○○○○○ 12%"
+jq -c --argjson n "$now" '.five_hour={pct:250,resets_at:($n+18000)}' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+out=$(render "$M"); assert_contains "polled percentage above 100 is ignored like stdin's" "$out" "5h: ●●●●●○○○○○ 58%"
+jq -c --argjson n "$now" '.five_hour={pct:3,resets_at:($n+18000)} | .seven_day.pct=40' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+NR="$SCRATCH/no-rates.json"; jq 'del(.rate_limits)' "$M" > "$NR"
+out=$(render "$NR"); assert_contains "no rate_limits on stdin → bars come from the poll alone" "$out" "5h: ○○○○○○○○○○ 3%"
+assert_contains "…including the 7d bar" "$out" "7d: ●●●●○○○○○○ 40%"
 # staleness: keep attempted_at fresh so no refetch, age the data
 jq -c --argjson n "$now" '.attempted_at=$n | .fetched_at=($n-7200)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
 out=$(render "$M"); assert_contains "stale data is tagged, not hidden" "$out" "37% old 2h00m"

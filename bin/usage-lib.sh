@@ -15,6 +15,14 @@
 # scope.model.display_name ("Fable"), percent, resets_at. Every such entry is
 # shown, so a future "Opus"/"Sonnet" bucket appears with no code change.
 #
+# The same reply carries the 5-hour and 7-day (all models) windows, so they are
+# cached too and merged with the stdin figures: stdin only moves when the model
+# answers in THIS session, while the poll also sees quota burnt elsewhere (other
+# sessions, other machines) and a window that has reset while you were idle.
+# Merge rule (see statusline-command.sh): same window → the higher figure wins,
+# because usage inside a window only rises; different reset times → the newer
+# window wins. That makes a stale poll harmless: it can never lower a number.
+#
 # HOW IT RUNS: the render never touches the network. It reads a small cache
 # ($CACHE_BASE/usage.json, 0600) and, when that is older than USAGE_TTL seconds,
 # fires one detached `curl` that rewrites the cache atomically. Failures never
@@ -34,9 +42,11 @@
 # TEST HOOK: STATUSLINE_USAGE_URL overrides the endpoint (file:// works).
 #
 # Functions:
-#   usage_scoped_rows <cache_base> <claude_dir>
-#       Prints one line per model-scoped weekly bucket:
-#           name\tpct\treset_epoch\tage_seconds
+#   usage_rows <cache_base> <claude_dir>
+#       Prints one line per window and per model-scoped weekly bucket:
+#           W\tfive_hour\tpct\treset_epoch\tage_seconds
+#           W\tseven_day\tpct\treset_epoch\tage_seconds
+#           S\t<name>\tpct\treset_epoch\tage_seconds
 #       (reset_epoch may be empty). Spawns a refresh when the cache is stale.
 
 USAGE_TTL="${STATUSLINE_USAGE_TTL:-300}"      # refresh cadence, seconds
@@ -92,7 +102,13 @@ _usage_fetch() {
             def clean: if type=="string"
                        then (explode | map(select(. > 31 and . != 127 and (. < 128 or . > 159))) | implode | .[0:24])
                        else "" end;
+            def win: if type=="object"
+                     then { pct: (.utilization | if type=="number" and . >= 0 then . else null end),
+                            resets_at: (.resets_at | iso_epoch) }
+                     else null end;
             { attempted_at: $now, fetched_at: $now,
+              five_hour: (.five_hour | win | select(. != null and .pct != null)),
+              seven_day: (.seven_day | win | select(. != null and .pct != null)),
               scoped: [ .limits[] | select(type=="object" and .kind=="weekly_scoped")
                         | select((.scope.model.display_name|type)=="string")
                         | { name: (.scope.model.display_name|clean),
@@ -115,8 +131,8 @@ _usage_fetch() {
     return 0
 }
 
-# usage_scoped_rows <cache_base> <claude_dir>
-usage_scoped_rows() {
+# usage_rows <cache_base> <claude_dir>
+usage_rows() {
     [ "${STATUSLINE_USAGE_API:-1}" = "0" ] && return 0
     local cache_base="$1" claude_dir="$2"
     local cache="$1/usage.json" marker="$1/usage.spawn"
@@ -151,10 +167,12 @@ usage_scoped_rows() {
         def clean: if type=="string"
                    then (explode | map(select(. > 31 and . != 127 and (. < 128 or . > 159))) | implode | .[0:24])
                    else "" end;
-        (.scoped // [])[] | select(type=="object")
-        | [ (.name|clean),
-            (.pct | if type=="number" and . >= 0 then . else empty end),
-            (.resets_at | if type=="number" and . > 0 then floor else "" end),
-            $age ] | select(.[0] != "") | @tsv' "$cache" 2>/dev/null
+        def pct:   if type=="number" and . >= 0 then . else empty end;
+        def reset: if type=="number" and . > 0 then floor else "" end;
+        ( ["five_hour","seven_day"][] as $w | .[$w] | select(type=="object")
+          | ["W", $w, (.pct|pct), (.resets_at|reset), $age] ),
+        ( (.scoped // [])[] | select(type=="object")
+          | ["S", (.name|clean), (.pct|pct), (.resets_at|reset), $age] | select(.[1] != "") )
+        | @tsv' "$cache" 2>/dev/null
     return 0
 }
