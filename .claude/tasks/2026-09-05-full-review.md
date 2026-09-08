@@ -66,3 +66,11 @@ node 22, jq 1.7, bash 5.2. Live stdin sample captured to `.sample-stdin.json`
   have left three pipelines that must agree forever, so both names are now thin
   wrappers that exec the report (old argv translated, flags forwarded, note on
   stderr). 145 checks.
+- 2026-09-08 E11 Per-model weekly bar (`7d Fable: …`). Not on the statusline
+  stdin at all (CC 2.1.261 builds rate_limits from five_hour/seven_day/spend_limit
+  only; the Fable window is `seven_day_overage_included` internally and reaches
+  /usage via the OAuth usage endpoint's `limits[]` as kind `weekly_scoped`).
+  New `bin/usage-lib.sh`: detached curl with the token from .credentials.json,
+  0600 cache, TTL 300 s, stale tag after 15 min, drop after 24 h, kill switch
+  STATUSLINE_USAGE_API=0. Placed on the fill line (user's call; line 2 is the
+  widest). Resets join line 4 only when they differ from the 7d reset.

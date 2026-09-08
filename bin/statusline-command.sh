@@ -6,8 +6,13 @@
 # Output (up to 5 lines; fill and backup lines are each conditional):
 #   Line 1: Model (effort) [fast] [no-think] | 219k/1m (22% used) | 748k 74% free | git: main #12
 #   Line 2: ctx: ●●●○… cache 78% · warm 42m | 5h: ●●●●○○○○ 43% ->cap 1h12m (Tue 14:30) | 7d: ●●○○○○○○ 22%
-#   Line 3: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%
+#   Line 3: fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16% | 7d Fable: ●●○○○○○○○○ 22%
 #   Line 4: resets 5:00pm (3h16m) | resets Tue, 5:35pm (3d2h) | $19.34 | $7.03/h | 2h45m | +1739/-223
+#
+# The "7d Fable" bar is the per-model weekly cap that /usage lists as "Current
+# week (Fable)". It is not on the statusline stdin, so usage-lib.sh fetches it
+# in the background from the OAuth usage endpoint (cached; STATUSLINE_USAGE_API=0
+# turns it off). It sits on the fill line because line 2 is already the widest.
 #   Line 5: (conditional) -> .claude/backups/3-backup-2026-06-02.md
 #
 # All stdin fields are extracted in ONE jq pass (see EXTRACT FIELDS). Every
@@ -28,6 +33,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/credit-lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/display-lib.sh"
 # shellcheck source=context-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/context-lib.sh"
+# shellcheck source=usage-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/usage-lib.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
@@ -296,6 +303,34 @@ if [ -n "$session_id" ] && [ -n "$transcript_path" ]; then
     [ -n "$ctx_break" ] && fill_line="${C_WHITE}fill:${C_RESET} ${ctx_break}"
 fi
 
+# PER-MODEL WEEKLY BARS ("7d Fable: …"): same shape as the 5h/7d bars, same
+# ->cap projection over the weekly window. Rendered from usage-lib's cache; a
+# stale cache is tagged rather than hidden, so a dead token shows as "old 3h",
+# never as a confident wrong number. Their resets join line 4 only when they
+# differ from the all-models 7d reset (usually they coincide).
+scoped_resets=()
+while IFS=$'\t' read -r sc_name sc_pct sc_reset sc_age; do
+    [ -n "$sc_name" ] || continue
+    [[ "$sc_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || continue
+    sc_int=$(printf '%.0f' "$sc_pct")
+    sc_color="$C_GREEN"; [ "$sc_int" -gt 100 ] 2>/dev/null && sc_color="$C_RED"
+    sc_seg="${C_WHITE}7d ${sc_name}:${C_RESET} $(build_bar "$sc_int" 10) ${sc_color}${sc_int}%${C_RESET}"
+    if [[ "$sc_reset" =~ ^[0-9]+$ ]]; then
+        sc_cap=$(project_cap "$sc_pct" "$sc_reset" 604800)
+        [ -n "$sc_cap" ] && sc_seg="${sc_seg} ${C_RED}->cap ${sc_cap}${C_RESET}"
+        if [[ "$week_reset" =~ ^[0-9]+$ ]]; then
+            _d=$(( sc_reset - week_reset )); [ "$_d" -lt 0 ] && _d=$(( -_d ))
+            [ "$_d" -gt 60 ] && scoped_resets+=("${sc_name}"$'\t'"${sc_reset}")
+        else
+            scoped_resets+=("${sc_name}"$'\t'"${sc_reset}")
+        fi
+    fi
+    if [[ "$sc_age" =~ ^[0-9]+$ ]] && [ "$sc_age" -gt "$USAGE_STALE" ]; then
+        sc_seg="${sc_seg} ${C_DIM}old $(fmt_countdown "$sc_age")${C_RESET}"
+    fi
+    if [ -n "$fill_line" ]; then fill_line="${fill_line}${C_SEP}${sc_seg}"; else fill_line="$sc_seg"; fi
+done < <(usage_scoped_rows "$CACHE_BASE" "$CLAUDE_DIR")
+
 # ============================================================================
 # LINE 3: Reset times + session cost + burn rate + duration + lines changed
 # ============================================================================
@@ -310,6 +345,10 @@ if [ -n "$week_reset" ] && [ -n "$week_pct" ]; then
     s=$(fmt_reset_friendly "$week_reset" "datetime")
     [ -n "$s" ] && line3_parts+=("${C_WHITE}resets ${s}${C_RESET}")
 fi
+for _sr in ${scoped_resets[@]+"${scoped_resets[@]}"}; do
+    s=$(fmt_reset_friendly "${_sr#*$'\t'}" "datetime")
+    [ -n "$s" ] && line3_parts+=("${C_WHITE}${_sr%%$'\t'*} resets ${s}${C_RESET}")
+done
 if [ -n "$spend_reset" ] && [ -n "$spend_pct" ]; then
     s=$(fmt_reset_friendly "$spend_reset" "datetime")
     [ -n "$s" ] && line3_parts+=("${C_WHITE}spend resets ${s}${C_RESET}")

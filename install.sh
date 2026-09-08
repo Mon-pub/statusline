@@ -50,12 +50,16 @@ if [ "${#missing[@]}" -gt 0 ]; then
     exit 1
 fi
 
+if ! command -v curl >/dev/null 2>&1; then
+    echo "Note: curl not found — the per-model weekly bar (7d Fable) will be absent; everything else works." >&2
+fi
+
 echo "Installing to: $TARGET"
 
 # --- Bash scripts ---
 echo ""
 echo "=== Bash scripts ==="
-for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh credit-report.sh display-lib.sh backup-bridge.sh context-lib.sh; do
+for f in statusline-command.sh credit-lib.sh credit-project.sh credit-summary.sh credit-report.sh display-lib.sh backup-bridge.sh context-lib.sh usage-lib.sh; do
     src="${SCRIPT_DIR}/bin/${f}"
     dst="${TARGET}/${f}"
     if [ ! -f "$src" ]; then

@@ -20,16 +20,24 @@ thing each.
 |-------|--------|-----------|
 | Statusline stdin JSON | Claude Code | All fields are extracted in a single `jq` pass that is the trust boundary: numeric fields are coerced to integers/numbers before any `bash` arithmetic (a string in a numeric slot becomes `0` or is dropped); 5h/7d percentages are range-checked to `0–100`; every printed string (`model.display_name`, `effort.level`, `output_style.name`, `prompt_cache.ttl`, `agent.name`, worktree names, paths) has C0/C1 control bytes stripped inside `jq`; `session_id` is reduced to `[A-Za-z0-9-]` before being used in any file path. The git branch (from `git symbolic-ref`) is control-stripped too. Absent fields are emitted as empty strings so array positions can never shift. |
 | Transcript JSONL | On disk (`~/.claude/projects/...`) | Parsed read-only for token/cost accounting, backup summaries, and the context-fill breakdown. Content is never `eval`'d. |
+| OAuth credentials | `$CLAUDE_CONFIG_DIR/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN`) | Read only by the detached usage fetcher in `usage-lib.sh`, only when `STATUSLINE_USAGE_API` is not `0`. The access token is checked against `[A-Za-z0-9._~+/=-]` before it is placed in a header, sent solely to `https://api.anthropic.com/api/oauth/usage`, and never written to the cache, a log, or the line. An expired token is skipped, never refreshed (refresh tokens rotate; racing Claude Code's own refresh could log you out). |
+| Usage cache | `$XDG_CACHE_HOME/claude-statusline/usage.json` | Written `0600` via temp file + rename by the fetcher; holds only timestamps and `{name, percent, reset}` per bucket. Server-supplied names are control-stripped and capped at 24 chars on write and again on read; percentages are re-validated as non-negative numbers before any arithmetic. Data older than a day is not rendered. |
 | Delta / cache files | `$XDG_CACHE_HOME/claude-statusline` | Values are validated as integers/decimals before arithmetic or printing. The breakdown cache (`breakdown-<id>.json`) is written `0600` via a temp-file + atomic rename and read back through `jq`; its numeric fields are re-guarded before use. Files older than 30 days are purged daily (only the statusline's own `breakdown-*`/`delta-*`/`credit-*` patterns, never the directory). |
 | Backup markdown | `.claude/backups/` | Session ids read back from backups are re-validated against `^[A-Za-z0-9-]{1,64}$` before being placed in any `claude --resume` command string. The backup path read from the per-session state file is re-matched against `^\.claude/backups/[A-Za-z0-9._-]+\.md$` before it is printed. |
 
 ### Network egress
 
-- The **statusline** and **backup capture** make **no network calls**.
+- The **backup capture** makes **no network calls**.
+- The **statusline** makes one optional call: `usage-lib.sh` fetches
+  `GET https://api.anthropic.com/api/oauth/usage` (the request `/usage` makes)
+  in a detached `curl` with an 8 s cap, at most once per `STATUSLINE_USAGE_TTL`
+  seconds (default 300), to draw the per-model weekly bar. The render itself
+  never waits on it. Disable with `STATUSLINE_USAGE_API=0`; the feature is also
+  inert without `curl` or without a credentials file.
 - The **backup compactor** (`node/backup-compactor.mjs`) invokes the `claude` CLI
   (`claude -p --bare --no-session-persistence`) to summarize backups older than
   14 days. This sends summaries of your own backup files to the Anthropic API.
-  It is the only egress surface. `--bare` skips hooks and plugins inside the
+  Together with the usage fetch above, these are the only egress surfaces. `--bare` skips hooks and plugins inside the
   summariser so no third-party hook sees the backup text; the
   `STATUSLINE_SPAWNED_BY` guard additionally stops our own hooks from recursing.
   Disable it by deleting `node/backup-compactor.mjs` or removing the
@@ -66,7 +74,10 @@ pristine `.bak`, and enforces `0600` on the result.
 
 ## Verification
 
-`bash tests/run.sh` exercises the trust boundary with hostile stdin (terminal
+`bash tests/run.sh` exercises the usage fetcher against a `file://` fixture
+(never the network) with a hostile bucket name, a non-numeric percentage and a
+fake token, and asserts the token never reaches the cache. It also exercises the
+trust boundary with hostile stdin (terminal
 escapes in `display_name`, command substitutions in numeric slots, path
 traversal in `session_id`, non-JSON input) and asserts nothing is evaluated or
 echoed raw. Run it after any change to `bin/` or `node/`.

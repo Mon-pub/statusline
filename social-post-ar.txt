@@ -22,6 +22,7 @@ cache 92% · 1h warm 59m — عدّاد تنازلي حتى تبرد الذاك�
 
 📈 حدود الاستخدام مع أشرطة تقدم
 نافذة 5 ساعات + 7 أيام + حد الإنفاق (spend limit)
+شريط أسبوعي لكل موديل على حدة: 7d Fable: ●●○○○○○○○○ 22% — نفس رقم "Current week (Fable)" في /usage
 أوقات إعادة التعيين بصيغة مقروءة: "5:00pm (3h16m)"
 🔥 توقّع الوصول للحد: ->cap 1h27m (Sat 03:02) عندما تكون وتيرة الاستهلاك ستصل للسقف قبل إعادة التعيين
 
@@ -57,7 +58,7 @@ bash tests/run.sh — يفحص العرض والتسعير والنسخ الاح
 
 Fable 5.1 (high) | 175k/1m (17% used) | 792k 79% free | git: main
 ctx: ●●○○○○○○○○○○○○○○ cache 92% · 1h warm 59m | 5h: ●●●●●●○○○○ 64% ->cap 1h27m (Sat 03:02) | 7d: ●○○○○○○○○○ 13%
-fill: tool out 69% · tool cmd 17% · attached 13% · chat In+Out 1%
+fill: tool out 69% · tool cmd 17% · attached 13% · chat In+Out 1% | 7d Fable: ●○○○○○○○○○ 1%
 resets 4:00am (2h24m) | resets Mon, 8:00am (2d6h) | $5.65 | $33.52/h | 10m | +413/-289
 -> .claude/backups/1-backup-2026-09-05-0135.md
 

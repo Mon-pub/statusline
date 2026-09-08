@@ -342,6 +342,65 @@ bash "$BIN/credit-summary.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 2 ]
 bash "$BIN/credit-summary.sh" --help 2>/dev/null | grep -q 'credit-report.sh' \
     && ok "credit-summary --help names its replacement" || fail "credit-summary help"
 
+echo "== per-model weekly bar (usage-lib) =="
+# No network in tests: the endpoint is a file:// fixture shaped like the real
+# /api/oauth/usage reply, and the token is a fake in the scratch config dir.
+UC="$XDG_CACHE_HOME/claude-statusline"
+printf '{"claudeAiOauth":{"accessToken":"FAKETOKEN-abc.def","expiresAt":%s}}\n' "$(( (now + 86400) * 1000 ))" > "$CLAUDE_CONFIG_DIR/.credentials.json"
+UA="$SCRATCH/usage-api.json"
+# "Opus" carries a raw ESC that must be stripped; "Broken" has a
+# non-numeric percent; "Cowork" is surface-scoped, not model-scoped.
+jq -n --argjson n "$now" '{
+  five_hour:{utilization:14,resets_at:"2026-09-08T13:50:00.440439+00:00"},
+  limits:[
+    {kind:"session",group:"session",percent:14,scope:null},
+    {kind:"weekly_all",group:"weekly",percent:13,scope:null},
+    {kind:"weekly_scoped",group:"weekly",percent:37,resets_at:(($n+260000)|todate|sub("Z$";".440733+00:00")),scope:{model:{id:null,display_name:"Fable"},surface:null}},
+    {kind:"weekly_scoped",group:"weekly",percent:120,resets_at:(($n+100000)|todate),scope:{model:{display_name:"Op\u001bus"}}},
+    {kind:"weekly_scoped",group:"weekly",percent:5,resets_at:"2026-09-14T00:00:00-05:00",scope:{model:{display_name:"Sonnet"}}},
+    {kind:"weekly_scoped",group:"weekly",percent:"x",scope:{model:{display_name:"Broken"}}},
+    {kind:"weekly_scoped",group:"weekly",percent:50,scope:{surface:{display_name:"Cowork"}}}
+  ]}' > "$UA"
+export STATUSLINE_USAGE_URL="file://$UA"
+rm -f "$UC/usage.json" "$UC/usage.spawn"
+out=$(render "$M")
+assert_not_contains "first render shows nothing yet (fetch is async)" "$out" "7d Fable"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$UC/usage.json" ] && break; sleep 0.5; done
+[ -f "$UC/usage.json" ] && ok "background fetch wrote the cache" || fail "usage cache missing"
+[ "$(stat -c %a "$UC/usage.json" 2>/dev/null)" = "600" ] && ok "usage cache 0600" || fail "usage cache mode"
+grep -q FAKETOKEN "$UC/usage.json" && fail "token leaked into cache" || ok "token never written to the cache"
+jq -e '.scoped|map(.name)|sort == ["Fable","Opus","Sonnet"]' "$UC/usage.json" >/dev/null \
+    && ok "model-scoped buckets kept, ESC stripped from name; bad percent and surface scope dropped" || fail "scoped set" "$(cat "$UC/usage.json")"
+jq -e '.scoped[] | select(.name=="Sonnet") | .resets_at == 1789362000' "$UC/usage.json" >/dev/null \
+    && ok "ISO reset with -05:00 offset converted to epoch" || fail "iso offset" "$(jq -c '.scoped' "$UC/usage.json")"
+out=$(render "$M"); [ "$VERBOSE" -eq 1 ] && printf '%s\n' "$out"
+assert_contains "Fable bar rendered"                       "$out" "7d Fable: ●●●○○○○○○○ 37%"
+assert_contains "over-cap bucket clamps bar, keeps number" "$out" "7d Opus: ●●●●●●●●●● 120%"
+printf '%s' "$out" | sed -n 3p | grep -q '7d Fable' && ok "scoped bars live on line 3 (fill line)" || fail "line placement" "$(printf '%s' "$out" | sed -n 3p)"
+assert_contains "reset that differs from 7d is listed on line 4" "$out" "Opus resets"
+assert_not_contains "reset equal to 7d is not repeated"          "$out" "Fable resets"
+# staleness: keep attempted_at fresh so no refetch, age the data
+jq -c --argjson n "$now" '.attempted_at=$n | .fetched_at=($n-7200)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+out=$(render "$M"); assert_contains "stale data is tagged, not hidden" "$out" "37% old 2h00m"
+jq -c --argjson n "$now" '.attempted_at=$n | .fetched_at=($n-90000)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+out=$(render "$M"); assert_not_contains "data older than a day is dropped" "$out" "7d Fable"
+# failed fetch keeps the last good payload and only bumps attempted_at
+jq -c --argjson n "$now" '.attempted_at=($n-1000) | .fetched_at=($n-100)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+rm -f "$UC/usage.spawn"
+STATUSLINE_USAGE_URL="file://$SCRATCH/does-not-exist.json" render "$M" >/dev/null
+for _ in 1 2 3 4 5 6; do jq -e --argjson n "$now" '.attempted_at >= $n' "$UC/usage.json" >/dev/null 2>&1 && break; sleep 0.5; done
+jq -e --argjson n "$now" '.attempted_at >= $n and (.scoped|map(.name)|index("Fable")) != null' "$UC/usage.json" >/dev/null \
+    && ok "failed fetch keeps old data, records the attempt" || fail "failed fetch handling" "$(cat "$UC/usage.json")"
+# kill switch and expired token: no cache, no read
+rm -f "$UC/usage.json" "$UC/usage.spawn"
+out=$(STATUSLINE_USAGE_API=0 render "$M"); sleep 1
+[ ! -f "$UC/usage.json" ] && ok "STATUSLINE_USAGE_API=0: no fetch" || fail "kill switch"
+assert_not_contains "STATUSLINE_USAGE_API=0: no bar" "$out" "7d Fable"
+printf '{"claudeAiOauth":{"accessToken":"FAKETOKEN-abc.def","expiresAt":%s}}\n' "$(( (now - 10) * 1000 ))" > "$CLAUDE_CONFIG_DIR/.credentials.json"
+rm -f "$UC/usage.spawn"; render "$M" >/dev/null; sleep 1
+[ ! -f "$UC/usage.json" ] && ok "expired token: fetch skipped (Claude Code refreshes it, not us)" || fail "expired token"
+unset STATUSLINE_USAGE_URL; rm -f "$CLAUDE_CONFIG_DIR/.credentials.json"
+
 echo "== isolation =="
 # The renderer spawns background backup triggers; give them a moment, then make
 # sure nothing landed outside the scratch dir.

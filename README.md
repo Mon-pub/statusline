@@ -5,7 +5,7 @@ A rich multi-line statusline for [Claude Code](https://code.claude.com/docs/en/s
 ```
 Fable 5.1 (high) | 175k/1m (17% used) | 792k 79% free | git: main #42
 ctx: ●●○○○○○○○○○○○○○○ cache 92% · 1h warm 59m | 5h: ●●●●●●○○○○ 64% ->cap 1h27m (Sat 03:02) | 7d: ●○○○○○○○○○ 13%
-fill: tool out 69% · tool cmd 17% · attached 13% · chat In+Out 1%
+fill: tool out 69% · tool cmd 17% · attached 13% · chat In+Out 1% | 7d Fable: ●○○○○○○○○○ 1%
 resets 4:00am (2h24m) | resets Mon, 8:00am (2d6h) | $5.65 | $33.52/h | 10m | +413/-289
 -> .claude/backups/1-backup-2026-09-05-0135.md
 ```
@@ -26,6 +26,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 - **Prompt-cache TTL countdown** — `1h warm 59m` (Claude Code 2.1.251+): the cache TTL and how long until the cached prefix goes cold and the next turn re-pays the full write price. Green above 10 minutes, yellow at 10, red at 3; `cold` in red once it has lapsed. With `refreshInterval` set (the installer does this) the countdown ticks while you are idle — a visible nudge to send the next turn before the cache expires.
 - **Free tokens until compact** — subtracts the 33k autocompact buffer (1M windows compact at ~967k) to show real usable space.
 - **Rate-limit bars** — 5-hour and 7-day windows, plus the **spend-limit** bar for Claude apps gateway users (2.1.251+), driven by Claude Code's own `rate_limits.*.used_percentage`. 5h/7d percentages are clamped to 0–100 so a transient bogus value is ignored rather than rendered; the spend figure is allowed past 100 (the bar clamps, the number turns red).
+- **Per-model weekly bar** — `7d Fable: ●●○○○○○○○○ 22%` on the fill line: the per-model weekly cap that `/usage` lists as "Current week (Fable)". Claude Code does not put this on the statusline stdin, so `usage-lib.sh` fetches it from the same account usage endpoint `/usage` calls, in a detached background `curl` at most every 5 minutes, with the OAuth token Claude Code already keeps in `.credentials.json`. A render never waits on the network; it reads a small cache. Every model-scoped bucket the server returns is shown, so a future Opus or Sonnet bucket needs no code change. Data older than 15 minutes is tagged `old 3h00m` rather than hidden; older than a day it is dropped. Its reset joins line 4 only when it differs from the all-models 7d reset. Set `STATUSLINE_USAGE_API=0` to turn the feature off entirely (no token read, no network). Needs `curl`; absent on macOS Keychain-only installs where there is no credentials file.
 - **Burn-rate projection** — when your current pace is on track to hit a window's limit _before_ it resets, the bar gains a red `->cap 1h12m (Tue 14:30)` marker: the projected time to 100% (days when over 24h) and the wall-clock moment it lands. It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
 - **Friendly reset times** — `5:00pm (3h16m)` for the 5-hour window; the weekly and spend resets show day + time + countdown, e.g. `Tue, 5:35pm (3d2h)` (a calendar date replaces the weekday when more than 7 days out).
 - **Session cost** — headline uses Claude Code's authoritative `cost.total_cost_usd` when present. Falls back to the per-model transcript estimate on older Claude Code (with a dim `in/out` split). Survives `/resume`.
@@ -50,7 +51,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 
 ## Requirements
 
-- `bash` 4+, `jq`, `awk`, `grep`, `date`, `stat`; `git` optional (for the branch tail)
+- `bash` 4+, `jq`, `awk`, `grep`, `date`, `stat`; `git` optional (for the branch tail); `curl` optional (for the per-model weekly bar)
 - `node` 18+ (backup system and context-fill breakdown only; the display degrades gracefully without it)
 
 ## Install
@@ -234,7 +235,7 @@ Rates are picked from the model id's family **and version** (`claude-fable-5-1` 
 
 ## Architecture
 
-**Bash display layer** handles all output formatting. Reads stdin JSON from Claude Code, computes everything locally, outputs ANSI-colored lines. Zero network calls, one `jq` pass, ~45 ms.
+**Bash display layer** handles all output formatting. Reads stdin JSON from Claude Code, computes everything locally, outputs ANSI-colored lines. One `jq` pass, ~45 ms. The only network access is the optional per-model weekly bar, which runs as a detached background fetch and never blocks a render (`STATUSLINE_USAGE_API=0` removes it).
 
 **Node.js backup layer** handles JSONL transcript parsing and backup creation. Called in the background by the bash statusline (via `backup-bridge.sh`) and by the PreCompact/SessionEnd hooks (via `conv-backup.mjs`). The optional **backup compaction** step (`backup-compactor.mjs`) summarizes backups older than 14 days by invoking the `claude` CLI.
 
@@ -248,12 +249,15 @@ Environment variables:
 - `STATUSLINE_NODE_DIR` — overrides `~/.claude/statusline-node` for node scripts
 - `STATUSLINE_LOG_DIR` — overrides default log directory for the backup system
 - `STATUSLINE_SUMMARY_MODEL` — model for the backup compactor (default `claude-sonnet-5`)
+- `STATUSLINE_USAGE_API` — set to `0` to disable the per-model weekly bar (no credentials read, no network)
+- `STATUSLINE_USAGE_TTL` — seconds between usage fetches for that bar (default `300`)
+- `CLAUDE_CODE_OAUTH_TOKEN` — if set, used for the usage fetch instead of `.credentials.json` (same variable Claude Code honours)
 
 ## Privacy
 
-The **statusline display** and **backup capture** read only local files (the stdin JSON Claude Code provides and your existing transcript JSONL) and make **no network calls and send no telemetry**.
+The **statusline display** and **backup capture** read only local files (the stdin JSON Claude Code provides and your existing transcript JSONL) and send **no telemetry**.
 
-One optional component does leave the machine: the **backup compactor** (`backup-compactor.mjs`) sends summaries of your own backups that are older than 14 days to the Anthropic API via the `claude` CLI, so they can be condensed. If you require strict no-egress, disable it by removing `node/backup-compactor.mjs` (or the `maybeSpawnCompactor()` call in `backup-core.mjs`). Backup files are written to your project's `.claude/backups/` with `0600` permissions and contain verbatim conversation content — treat them as sensitive and keep them gitignored.
+Two optional components do leave the machine. The **per-model weekly bar** sends one GET with your Claude Code OAuth token to `api.anthropic.com/api/oauth/usage` at most every 5 minutes while a session is open, the same request `/usage` makes; the token is never written to disk by this project, and `STATUSLINE_USAGE_API=0` disables it. The **backup compactor** (`backup-compactor.mjs`) sends summaries of your own backups that are older than 14 days to the Anthropic API via the `claude` CLI, so they can be condensed. If you require strict no-egress, disable it by removing `node/backup-compactor.mjs` (or the `maybeSpawnCompactor()` call in `backup-core.mjs`). Backup files are written to your project's `.claude/backups/` with `0600` permissions and contain verbatim conversation content — treat them as sensitive and keep them gitignored.
 
 See [SECURITY.md](SECURITY.md) for the full trust model and how to report issues.
 
