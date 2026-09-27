@@ -215,14 +215,16 @@ bash ~/.claude/credit-summary.sh 2026-05-01 ~/proj # → …--since 2026-05-01 ~
 Flags are forwarded, so `credit-summary.sh 2026-05-01 --json` works. Prefer
 `credit-report.sh` directly in anything new.
 
-## Pricing (as of 2026-09-05)
+## Pricing (as of 2026-09-28)
 
-Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25).
+Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25), and **Opus 5.5**, where it is 0.05× ($0.20).
 
 | Model                 | Input  | Cache read | Cache write | Output |
 | --------------------- | ------ | ---------- | ----------- | ------ |
 | Fable / Mythos 5.1    | $10.00 | $0.25      | $12.50      | $50.00 |
 | Fable / Mythos 5      | $10.00 | $1.00      | $12.50      | $50.00 |
+| Opus 5.5              | $4.00  | $0.20      | $5.00       | $20.00 |
+| Opus 5.5 fast         | $8.00  | $0.40      | $10.00      | $40.00 |
 | Opus 5, 4.5–4.8       | $5.00  | $0.50      | $6.25       | $25.00 |
 | Opus 5 / 4.8 fast     | $10.00 | $1.00      | $12.50      | $50.00 |
 | Opus 4.0 / 4.1 / 3    | $15.00 | $1.50      | $18.75      | $75.00 |
@@ -231,7 +233,7 @@ Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.clau
 | Haiku 4.5             | $1.00  | $0.10      | $1.25       | $5.00  |
 | Haiku 3.x             | $0.80  | $0.08      | $1.00       | $4.00  |
 
-Rates are picked from the model id's family **and version** (`claude-fable-5-1` → fable 5.1, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Edit `set_rates()` in `bin/credit-lib.sh` to update pricing.
+Rates are picked from the model id's family **and version** (`claude-fable-5-1` → fable 5.1, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Opus 5.5 is the first Opus that is *cheaper* than its predecessor, so it must not fall into the Opus 5 bracket — that would overstate its cost by 25% (60% on cache reads). Edit `set_rates()` in `bin/credit-lib.sh` to update pricing; the account report fingerprints that code in its cache key, so a rate change re-prices every cached session on the next run.
 
 ## Architecture
 

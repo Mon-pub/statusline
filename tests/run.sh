@@ -52,6 +52,9 @@ t=$(price claude-fable-5-1);            assert_contains "fable 5.1 read \$0.25" 
 t=$(price claude-fable-5);              assert_contains "fable 5 read \$1.00"     "$t" "fable-5.0 10.00 1.000 12.50 20.00 50.00"
 t=$(price claude-mythos-5-1);           assert_contains "mythos 5.1 = fable"      "$t" "mythos-5.1 10.00 0.250"
 t=$(price claude-opus-5);               assert_contains "opus 5"                  "$t" "opus-5.0 5.00 0.500 6.25 10.00 25.00"
+t=$(price claude-opus-5-5);             assert_contains "opus 5.5 \$4/\$20, 0.05x read" "$t" "opus-5.5 4.00 0.200 5.00 8.00 20.00"
+t=$(price claude-opus-5-5 fast);        assert_contains "opus 5.5 fast \$8/\$40"  "$t" "opus-5.5+fast 8.00 0.400 10.00 16.00 40.00"
+t=$(price claude-opus-5 fast);          assert_contains "opus 5 fast still \$10/\$50" "$t" "opus-5.0+fast 10.00 1.000 12.50 20.00 50.00"
 t=$(price claude-opus-4-8 fast);        assert_contains "opus 4.8 fast \$10/\$50" "$t" "opus-4.8+fast 10.00 1.000 12.50 20.00 50.00"
 t=$(price claude-opus-4-1-20250805);    assert_contains "opus 4.1 legacy \$15"    "$t" "opus-4.1 15.00 1.500 18.75 30.00 75.00"
 t=$(price claude-sonnet-5);             assert_contains "sonnet 5 \$2/\$10"       "$t" "sonnet-5.0 2.00 0.200 2.50 4.00 10.00"
@@ -305,6 +308,13 @@ assert_contains "cache invalidates when a subagent file appears" "$rep" "TOTAL  
 mk_asst "$PR/-tmp-alpha/s-aaaa/subagents/agent-z.jsonl" m7 claude-sonnet-5 1000000 0 0   # same file grows, count unchanged
 rep=$(bash "$BIN/credit-report.sh" --no-color 2>/dev/null)
 assert_contains "cache invalidates when a subagent file grows"   "$rep" "TOTAL  \$16.50"
+# A price change must re-price cached sessions: fake one by editing the rate
+# code in a copy of the lib (the cache key fingerprints it).
+PB="$SCRATCH/pricebin"; mkdir -p "$PB"; cp "$BIN"/credit-*.sh "$PB/"
+sed -i 's/if (major >= 5) { ri = 2.00; ro = 10.00 }/if (major >= 5) { ri = 4.00; ro = 10.00 }/' "$PB/credit-lib.sh"
+rep=$(bash "$PB/credit-report.sh" --no-color 2>/dev/null)
+assert_contains "cache re-prices when a rate changes (sonnet-5 input doubled: +7.00 USD on 3.5M tokens)" "$rep" "TOTAL  \$23.50"
+rm -rf "$PB"
 bash "$BIN/credit-report.sh" --since 2026-13 >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad --since rejected" || fail "bad --since"
 bash "$BIN/credit-report.sh" /definitely/not/here >/dev/null 2>&1; [ $? -eq 1 ] && ok "missing project rejected" || fail "missing project"
 

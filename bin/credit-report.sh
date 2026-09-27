@@ -41,6 +41,10 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
 PROJECTS_ROOT="${CLAUDE_DIR}/projects"
 CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/claude-statusline/report"
 CACHE_FORMAT=v2   # bump when the cached row shape changes
+# Cached rows hold dollars, so they must also go stale when a PRICE changes.
+# Fingerprint the pricing code itself: editing any rate in credit-lib.sh
+# re-prices every session on the next run, with nothing to remember to bump.
+PRICING_SIG=$(printf '%s' "$_AWK_RATE_FN" | cksum | cut -d' ' -f1)
 
 since=""; until_=""; top=5; show_all=0; projects_only=0; as_json=0; refresh=0; color=auto
 only_project=""
@@ -171,7 +175,7 @@ for main in "${sessions[@]}"; do
     fi
     [ "$since_epoch" -gt 0 ] && [ "$last_mtime" -lt "$since_epoch" ] && continue
 
-    key="${CACHE_FORMAT} ${main_mtime}:${main_size}:${nsub}:${sub_sig}"
+    key="${CACHE_FORMAT}:${PRICING_SIG} ${main_mtime}:${main_size}:${nsub}:${sub_sig}"
     safe_id=$(printf '%s' "$sid" | tr -c 'a-zA-Z0-9_-' '_')
     cache="$CACHE_DIR/${pname}__${safe_id}.tsv"
 

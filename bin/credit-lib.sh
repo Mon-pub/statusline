@@ -1,13 +1,17 @@
 #!/bin/bash
 # credit-lib.sh — shared pricing logic for the statusline and the credit report.
 #
-# Pricing (per 1M tokens; verified 2026-09-05 from
+# Pricing (per 1M tokens; verified 2026-09-28 from
 # https://platform.claude.com/docs/en/about-claude/pricing).
 # Cache multipliers vs base input: 5-minute write 1.25x, 1-hour write 2x,
-# read 0.1x — except Fable/Mythos 5.1 where a read is 0.025x ($0.25).
+# read 0.1x — except Fable/Mythos 5.1 where a read is 0.025x ($0.25) and
+# Opus 5.5 where it is 0.05x ($0.20).
 #
 #   Fable / Mythos 5.1:  $10 in / $0.25 read / $12.50 5m / $20 1h / $50 out
 #   Fable / Mythos 5:    $10 in / $1.00 read / $12.50 5m / $20 1h / $50 out
+#   Opus 5.5:            $4  in / $0.20 read / $5     5m / $8  1h / $20 out
+#     fast mode: $8 in / $40 out; cache multipliers stack on the fast input
+#     price ($0.40 read / $10 5m / $16 1h). Rates verified 2026-09-28.
 #   Opus 5, 4.5–4.8:     $5  in / $0.50 read / $6.25  5m / $10 1h / $25 out
 #     fast mode (usage.speed=="fast", Opus 5 / 4.8): $10 in / $50 out, cache
 #     multipliers stack on the fast input price ($1 read / $12.50 5m / $20 1h).
@@ -164,10 +168,19 @@ _AWK_RATE_FN='
             if (major >= 5) { ri = 2.00; ro = 10.00 } else { ri = 3.00; ro = 15.00 }
             std_cache(ri)
         } else if (family == "opus") {
-            if (speed == "fast")  { ri = 10.00; ro = 50.00 }
-            else if (ver >= 4.5) { ri = 5.00;  ro = 25.00 }
-            else                 { ri = 15.00; ro = 75.00 }
-            std_cache(ri)
+            if (ver >= 5.5) {
+                # Opus 5.5 is CHEAPER than Opus 5, with a deeper cache-read
+                # discount (0.05x). Fast mode is 2x and the cache multipliers
+                # stack on the fast input price, as on Opus 5.
+                if (speed == "fast") { ri = 8.00; ro = 40.00 } else { ri = 4.00; ro = 20.00 }
+                std_cache(ri)
+                rr = ri * 0.05                   # $0.20 read ($0.40 fast)
+            } else {
+                if (speed == "fast")  { ri = 10.00; ro = 50.00 }
+                else if (ver >= 4.5) { ri = 5.00;  ro = 25.00 }
+                else                 { ri = 15.00; ro = 75.00 }
+                std_cache(ri)
+            }
         } else if (family == "fable" || family == "mythos") {
             ri = 10.00; ro = 50.00
             std_cache(ri)

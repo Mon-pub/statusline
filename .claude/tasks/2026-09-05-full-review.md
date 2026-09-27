@@ -74,3 +74,10 @@ node 22, jq 1.7, bash 5.2. Live stdin sample captured to `.sample-stdin.json`
   0600 cache, TTL 300 s, stale tag after 15 min, drop after 24 h, kill switch
   STATUSLINE_USAGE_API=0. Placed on the fill line (user's call; line 2 is the
   widest). Resets join line 4 only when they differ from the 7d reset.
+- 2026-09-28 B10 Opus 5.5 released: $4 in / $0.20 read (0.05x, a new
+  multiplier) / $5 5m / $8 1h / $20 out; fast $8/$40 with cache multipliers
+  stacked. Verified on the live pricing page. Before the fix it fell into the
+  Opus >= 4.5 bracket and was overbilled 25% (60% on cache reads); 271 local
+  transcripts already use it. Also: the report cache stored dollars keyed only
+  on file size/mtime, so a price change would never re-price cached sessions —
+  the key now includes a cksum of the rate code.
