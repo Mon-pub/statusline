@@ -44,6 +44,7 @@
 #     claude-3-5-sonnet-20241022 → sonnet 3.5
 #     claude-3-opus-20240229     → opus   3.0
 #     claude-fable-5-1           → fable  5.1
+#     claude-opus-5-5            → opus   5.5  ($4/$20, 0.05x read — cheaper than 5.0)
 #     claude-opus-5              → opus   5.0
 #     claude-zephyr-6            → zephyr 6.0  (unknown family → Opus 5 rates)
 #     (empty / no model field)   → unknown
