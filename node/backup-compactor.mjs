@@ -36,8 +36,11 @@ const INTER_BATCH_DELAY_MS = 5000;
 const CONTENT_CAP = 4000; // chars per backup sent to summarizer
 const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "claude-statusline");
 const LOCK_PATH = join(CACHE_DIR, "compactor.lock");
-// Summariser model: cheap, current. Sonnet 5 is $2/$10 per MTok (2026-09).
-const SUMMARY_MODEL = process.env.STATUSLINE_SUMMARY_MODEL || "claude-sonnet-5";
+// Summariser model: cheap, current. Sonnet 5.5 is $2/$10 per MTok, the same
+// price as Sonnet 5 (verified 2026-10-04). A CLI too old to know 5.5 falls
+// back to Sonnet 5 once; an explicit STATUSLINE_SUMMARY_MODEL is never swapped.
+const SUMMARY_MODEL = process.env.STATUSLINE_SUMMARY_MODEL || "claude-sonnet-5-5";
+const FALLBACK_MODEL = process.env.STATUSLINE_SUMMARY_MODEL ? null : "claude-sonnet-5";
 
 // ---------------------------------------------------------------------------
 // Logging (reuse format from backup-core)
@@ -171,8 +174,8 @@ function buildPrompt(batch, contents) {
 // never fire inside the summariser) and `--no-session-persistence` keeps the
 // summariser from leaving a transcript of its own in the project. Older CLIs
 // without `--bare` get one retry without it.
-function runClaude(prompt, extraFlags) {
-  return spawnSync("claude", ["-p", "--model", SUMMARY_MODEL, "--no-session-persistence", ...extraFlags], {
+function runClaude(prompt, extraFlags, model = SUMMARY_MODEL) {
+  return spawnSync("claude", ["-p", "--model", model, "--no-session-persistence", ...extraFlags], {
     input: prompt,
     encoding: "utf-8",
     timeout: 180_000,
@@ -185,10 +188,19 @@ function runClaude(prompt, extraFlags) {
 function summarizeWithClaude(prompt) {
   log(`Calling claude -p --model ${SUMMARY_MODEL} (${prompt.length} chars)`);
 
-  let res = runClaude(prompt, ["--bare"]);
+  let flags = ["--bare"];
+  let res = runClaude(prompt, flags);
   if (!res.error && res.status !== 0 && /unknown option.*--bare/i.test(res.stderr || "")) {
     log("CLI lacks --bare, retrying without it");
-    res = runClaude(prompt, []);
+    flags = [];
+    res = runClaude(prompt, flags);
+  }
+  // Only a model-not-found style failure triggers the fallback: retrying on any
+  // error would double the cost of a genuine failure (auth, rate limit, network).
+  if (FALLBACK_MODEL && !res.error && res.status !== 0
+      && /model|not[_ ]found|invalid/i.test(res.stderr || "") && !/rate.?limit|auth|login/i.test(res.stderr || "")) {
+    log(`${SUMMARY_MODEL} rejected, retrying with ${FALLBACK_MODEL}`);
+    res = runClaude(prompt, flags, FALLBACK_MODEL);
   }
 
   if (res.error) { log(`CLI error: ${res.error.message}`); return null; }

@@ -100,7 +100,12 @@ mapfile -t F < <(printf '%s' "$input" | jq -r '
       ((.worktree.name // .workspace.git_worktree // "") | clean),       # 31
       (.agent.name // "" | clean),                                       # 32
       (.version // "" | clean),                                          # 33
-      (if .effort == null then "0" else "1" end)                         # 34
+      (if .effort == null then "0" else "1" end),                        # 34
+      (.rate_limits.spend_limit.used_usd
+         | if type=="number" and . >= 0 then . else "" end),             # 35 (CC 2.1.284+)
+      (.rate_limits.spend_limit.limit_usd
+         | if type=="number" and . > 0 then . else "" end),              # 36
+      (.rate_limits.spend_limit.period // "" | ident)                    # 37
     ] | .[]' 2>/dev/null)
 
 model="${F[0]:-Unknown}";     model_id="${F[1]}";        effort="${F[2]}"
@@ -120,6 +125,7 @@ pc_ttl="${F[26]}";            pc_expires="${F[27]}"
 project_dir="${F[28]}";       current_dir="${F[29]}"
 pr_number="${F[30]}";         worktree_name="${F[31]}"
 agent_name="${F[32]}";        cc_version="${F[33]}";      has_effort_key="${F[34]:-0}"
+spend_used_usd="${F[35]}";    spend_limit_usd="${F[36]}"; spend_period="${F[37]}"
 
 # Defense in depth: even though jq coerced these, re-assert the integer shape
 # before any `$(( ))` so a jq failure (empty F array) can't leak a raw string.
@@ -282,7 +288,17 @@ fi
 if [ -n "$spend_pct" ]; then
     spend_int=$(printf '%.0f' "$spend_pct")
     spend_color="$C_GREEN"; [ "$spend_int" -gt 100 ] 2>/dev/null && spend_color="$C_RED"
-    rate_parts+=("${C_WHITE}spend:${C_RESET} $(build_bar "$spend_int" 10) ${spend_color}${spend_int}%${C_RESET}")
+    spend_seg="${C_WHITE}spend:${C_RESET} $(build_bar "$spend_int" 10) ${spend_color}${spend_int}%${C_RESET}"
+    # Dollar amounts (CC 2.1.284+, USD gateways only): "$271.40 of $500/mo".
+    # The limit drops its cents when they are zero; unknown periods get no suffix.
+    if [[ "$spend_used_usd" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [[ "$spend_limit_usd" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        _lim=$(awk -v v="$spend_limit_usd" 'BEGIN { if (v == int(v)) printf "%d", v; else printf "%.2f", v }')
+        case "$spend_period" in
+            daily) _per="/day" ;; weekly) _per="/wk" ;; monthly) _per="/mo" ;; annual) _per="/yr" ;; *) _per="" ;;
+        esac
+        spend_seg="${spend_seg} ${C_DIM}\$$(printf '%.2f' "$spend_used_usd") of \$${_lim}${_per}${C_RESET}"
+    fi
+    rate_parts+=("$spend_seg")
 fi
 
 rate_line=""

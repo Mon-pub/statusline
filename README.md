@@ -25,7 +25,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 - **Cache share** — `cache 92%` on the context line: the share of the current request's input served from the prompt cache (`cache_read / total input`). Hidden until there's input (e.g. right after `/compact`).
 - **Prompt-cache TTL countdown** — `1h warm 59m` (Claude Code 2.1.251+): the cache TTL and how long until the cached prefix goes cold and the next turn re-pays the full write price. Green above 10 minutes, yellow at 10, red at 3; `cold` in red once it has lapsed. With `refreshInterval` set (the installer does this) the countdown ticks while you are idle — a visible nudge to send the next turn before the cache expires.
 - **Free tokens until compact** — subtracts the 33k autocompact buffer (1M windows compact at ~967k) to show real usable space.
-- **Rate-limit bars** — 5-hour and 7-day windows, plus the **spend-limit** bar for Claude apps gateway users (2.1.251+), driven by Claude Code's own `rate_limits.*.used_percentage`. Those stdin figures only move when the model answers in the current session, so the same 5-minute poll that feeds the per-model bar (below) is merged in: it also sees quota burnt in other sessions or on other machines, and a window that reset while you were idle. Merge rule per window: same reset time, the higher figure wins (usage inside a window only rises); different reset times, the newer window wins. A stale poll can therefore never lower a number. Without the poll (no `curl`, no credentials, or `STATUSLINE_USAGE_API=0`) the bars behave exactly as before. 5h/7d percentages are clamped to 0–100 so a transient bogus value is ignored rather than rendered; the spend figure is allowed past 100 (the bar clamps, the number turns red).
+- **Rate-limit bars** — 5-hour and 7-day windows, plus the **spend-limit** bar for Claude apps gateway users (2.1.251+), driven by Claude Code's own `rate_limits.*.used_percentage`. Those stdin figures only move when the model answers in the current session, so the same 5-minute poll that feeds the per-model bar (below) is merged in: it also sees quota burnt in other sessions or on other machines, and a window that reset while you were idle. Merge rule per window: same reset time, the higher figure wins (usage inside a window only rises); different reset times, the newer window wins. A stale poll can therefore never lower a number. Without the poll (no `curl`, no credentials, or `STATUSLINE_USAGE_API=0`) the bars behave exactly as before. 5h/7d percentages are clamped to 0–100 so a transient bogus value is ignored rather than rendered; the spend figure is allowed past 100 (the bar clamps, the number turns red). On Claude Code 2.1.284+ with a USD gateway the spend bar also shows the money: `spend: ●●●●●○○○○○ 54% $271.40 of $500/mo`.
 - **Per-model weekly bar** — `7d Fable: ●●○○○○○○○○ 22%` on the fill line: the per-model weekly cap that `/usage` lists as "Current week (Fable)". Claude Code does not put this on the statusline stdin, so `usage-lib.sh` fetches it from the same account usage endpoint `/usage` calls, in a detached background `curl` at most every 5 minutes, with the OAuth token Claude Code already keeps in `.credentials.json`. A render never waits on the network; it reads a small cache. Every model-scoped bucket the server returns is shown, so a future Opus or Sonnet bucket needs no code change. Data older than 15 minutes is tagged `old 3h00m` rather than hidden; older than a day it is dropped. Its reset joins line 4 only when it differs from the all-models 7d reset. Set `STATUSLINE_USAGE_API=0` to turn the feature off entirely (no token read, no network). Needs `curl`; absent on macOS Keychain-only installs where there is no credentials file.
 - **Burn-rate projection** — when your current pace is on track to hit a window's limit _before_ it resets, the bar gains a red `->cap 1h12m (Tue 14:30)` marker: the projected time to 100% (days when over 24h) and the wall-clock moment it lands. It stays clean when you're not on track. Computed purely from that window's `used_percentage` + `resets_at`.
 - **Friendly reset times** — `5:00pm (3h16m)` for the 5-hour window; the weekly and spend resets show day + time + countdown, e.g. `Tue, 5:35pm (3d2h)` (a calendar date replaces the weekday when more than 7 days out).
@@ -40,7 +40,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 - **Auto backup on thresholds** — first backup at 50k tokens, then every 10k. Percentage thresholds at 30%, 15%, 5% free as a safety net. The bash side only spawns node when the count moved 5k+; node applies the policy and writes only when a threshold is crossed. After a compaction the thresholds re-arm automatically.
 - **PreCompact hook** — captures context before Claude Code compacts, so you never lose work.
 - **SessionEnd hook** — refreshes the backup one last time when a session that already has one ends (sessions that never reached a threshold do not get a file).
-- **Backup compaction** — old backups (>14 days) are summarized by the Claude CLI (`claude -p --bare --no-session-persistence`, Sonnet 5 by default; override with `STATUSLINE_SUMMARY_MODEL`) into archived summaries, preserving session IDs for `--resume`.
+- **Backup compaction** — old backups (>14 days) are summarized by the Claude CLI (`claude -p --bare --no-session-persistence`, Sonnet 5.5 by default, falling back once to Sonnet 5 on a CLI too old to know it; override with `STATUSLINE_SUMMARY_MODEL`) into archived summaries, preserving session IDs for `--resume`.
 - **Backup path display** — the last line shows the current backup file path when one exists.
 - **Cache housekeeping** — per-session cache files under `~/.cache/claude-statusline` older than 30 days are purged once a day, in the background.
 
@@ -215,7 +215,7 @@ bash ~/.claude/credit-summary.sh 2026-05-01 ~/proj # → …--since 2026-05-01 ~
 Flags are forwarded, so `credit-summary.sh 2026-05-01 --json` works. Prefer
 `credit-report.sh` directly in anything new.
 
-## Pricing (as of 2026-09-28)
+## Pricing (as of 2026-10-04)
 
 Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25), and **Opus 5.5**, where it is 0.05× ($0.20).
 
@@ -228,12 +228,12 @@ Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.clau
 | Opus 5, 4.5–4.8       | $5.00  | $0.50      | $6.25       | $25.00 |
 | Opus 5 / 4.8 fast     | $10.00 | $1.00      | $12.50      | $50.00 |
 | Opus 4.0 / 4.1 / 3    | $15.00 | $1.50      | $18.75      | $75.00 |
-| Sonnet 5              | $2.00  | $0.20      | $2.50       | $10.00 |
+| Sonnet 5.5 / 5        | $2.00  | $0.20      | $2.50       | $10.00 |
 | Sonnet 4.x / 3.x      | $3.00  | $0.30      | $3.75       | $15.00 |
 | Haiku 4.5             | $1.00  | $0.10      | $1.25       | $5.00  |
 | Haiku 3.x             | $0.80  | $0.08      | $1.00       | $4.00  |
 
-Rates are picked from the model id's family **and version** (`claude-fable-5-1` → fable 5.1, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Opus 5.5 is the first Opus that is *cheaper* than its predecessor, so it must not fall into the Opus 5 bracket — that would overstate its cost by 25% (60% on cache reads). Edit `set_rates()` in `bin/credit-lib.sh` to update pricing; the account report fingerprints that code in its cache key, so a rate change re-prices every cached session on the next run.
+Rates are picked from the model id's family **and version** (`claude-fable-5-1` → fable 5.1, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. Sonnet 5.5 (2026-10, now Claude Code's default Sonnet) costs the same and uses standard cache multipliers; there is no Sonnet fast mode. The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Opus 5.5 is the first Opus that is *cheaper* than its predecessor, so it must not fall into the Opus 5 bracket — that would overstate its cost by 25% (60% on cache reads). Edit `set_rates()` in `bin/credit-lib.sh` to update pricing; the account report fingerprints that code in its cache key, so a rate change re-prices every cached session on the next run.
 
 ## Architecture
 
@@ -250,7 +250,7 @@ Environment variables:
 - `STATUSLINE_PROJECT_DIR` — project root for backup files (auto-set by hooks; the statusline itself uses `workspace.project_dir` from stdin)
 - `STATUSLINE_NODE_DIR` — overrides `~/.claude/statusline-node` for node scripts
 - `STATUSLINE_LOG_DIR` — overrides default log directory for the backup system
-- `STATUSLINE_SUMMARY_MODEL` — model for the backup compactor (default `claude-sonnet-5`)
+- `STATUSLINE_SUMMARY_MODEL` — model for the backup compactor (default `claude-sonnet-5-5`; when unset, a CLI that rejects it gets one retry on `claude-sonnet-5`)
 - `STATUSLINE_USAGE_API` — set to `0` to disable the per-model weekly bar (no credentials read, no network)
 - `STATUSLINE_USAGE_TTL` — seconds between usage fetches for that bar (default `300`)
 - `CLAUDE_CODE_OAUTH_TOKEN` — if set, used for the usage fetch instead of `.credentials.json` (same variable Claude Code honours)

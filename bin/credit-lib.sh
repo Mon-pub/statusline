@@ -1,7 +1,7 @@
 #!/bin/bash
 # credit-lib.sh — shared pricing logic for the statusline and the credit report.
 #
-# Pricing (per 1M tokens; verified 2026-09-28 from
+# Pricing (per 1M tokens; verified 2026-10-04 from
 # https://platform.claude.com/docs/en/about-claude/pricing).
 # Cache multipliers vs base input: 5-minute write 1.25x, 1-hour write 2x,
 # read 0.1x — except Fable/Mythos 5.1 where a read is 0.025x ($0.25) and
@@ -16,7 +16,8 @@
 #     fast mode (usage.speed=="fast", Opus 5 / 4.8): $10 in / $50 out, cache
 #     multipliers stack on the fast input price ($1 read / $12.50 5m / $20 1h).
 #   Opus 4.0 / 4.1 / 3:  $15 in / $1.50 read / $18.75 5m / $30 1h / $75 out (retired)
-#   Sonnet 5:            $2  in / $0.20 read / $2.50  5m / $4  1h / $10 out
+#   Sonnet 5.5 / 5:      $2  in / $0.20 read / $2.50  5m / $4  1h / $10 out
+#     (Sonnet 5.5, 2026-10: same price, standard multipliers, no fast mode)
 #     (the launch "introductory" $2/$10 became the permanent price; the
 #     scheduled 2026-09-01 rise to $3/$15 was cancelled)
 #   Sonnet 4.x / 3.x:    $3  in / $0.30 read / $3.75  5m / $6  1h / $15 out

@@ -58,6 +58,7 @@ t=$(price claude-opus-5 fast);          assert_contains "opus 5 fast still \$10/
 t=$(price claude-opus-4-8 fast);        assert_contains "opus 4.8 fast \$10/\$50" "$t" "opus-4.8+fast 10.00 1.000 12.50 20.00 50.00"
 t=$(price claude-opus-4-1-20250805);    assert_contains "opus 4.1 legacy \$15"    "$t" "opus-4.1 15.00 1.500 18.75 30.00 75.00"
 t=$(price claude-sonnet-5);             assert_contains "sonnet 5 \$2/\$10"       "$t" "sonnet-5.0 2.00 0.200 2.50 4.00 10.00"
+t=$(price claude-sonnet-5-5);           assert_contains "sonnet 5.5 = sonnet 5 rates" "$t" "sonnet-5.5 2.00 0.200 2.50 4.00 10.00"
 t=$(price claude-sonnet-4-6);           assert_contains "sonnet 4.6 \$3/\$15"     "$t" "sonnet-4.6 3.00 0.300 3.75 6.00 15.00"
 t=$(price claude-3-5-sonnet-20241022);  assert_contains "legacy 3-5-sonnet order" "$t" "sonnet-3.5 3.00"
 t=$(price claude-haiku-4-5-20251001);   assert_contains "haiku 4.5"               "$t" "haiku-4.5 1.00 0.100 1.25 2.00 5.00"
@@ -105,6 +106,16 @@ assert_contains "cap wall-clock"                       "$out" "m ("
 assert_contains "long cap projection uses days"         "$out" "7d: ●●○○○○○○○○ 20% ->cap 4d"
 assert_contains "spend bar clamps, number exceeds 100"  "$out" "spend: ●●●●●●●●●● 112%"
 assert_contains "spend reset uses calendar date >7d"    "$out" "spend resets "
+assert_not_contains "no dollar amounts without used_usd (CC < 2.1.284)" "$out" " of \$"
+# CC 2.1.284+ adds used_usd / limit_usd / period to spend_limit (USD gateways)
+SP="$SCRATCH/spend-usd.json"
+jq '.rate_limits.spend_limit += {used_usd:271.4, limit_usd:500, period:"monthly"}' "$C" > "$SP"
+out=$(render "$SP"); assert_contains "spend dollars: used of limit per period" "$out" "112% \$271.40 of \$500/mo"
+jq '.rate_limits.spend_limit += {used_usd:3, limit_usd:12.5, period:"unknown"}' "$C" > "$SP"
+out=$(render "$SP"); assert_contains "fractional limit keeps cents, unknown period has no suffix" "$out" "112% \$3.00 of \$12.50"
+assert_not_contains "…and no stray period text" "$out" "12.50/"
+jq '.rate_limits.spend_limit += {used_usd:"$(id)", limit_usd:-5, period:"monthly\u001b[31m"}' "$C" > "$SP"
+out=$(render "$SP"); assert_not_contains "hostile dollar fields are dropped" "$out" " of \$"
 assert_contains "cold cache (no separator without a share)" "$out" "○ cold |"
 assert_not_contains "no cache share after /compact"     "$out" "cache 9"
 assert_contains "fast badge"                            "$out" " fast "
@@ -427,6 +438,44 @@ printf '{"claudeAiOauth":{"accessToken":"FAKETOKEN-abc.def","expiresAt":%s}}\n' 
 rm -f "$UC/usage.spawn"; render "$M" >/dev/null; sleep 1
 [ ! -f "$UC/usage.json" ] && ok "expired token: fetch skipped (Claude Code refreshes it, not us)" || fail "expired token"
 unset STATUSLINE_USAGE_URL; rm -f "$CLAUDE_CONFIG_DIR/.credentials.json"
+
+echo "== backup compactor: summariser model + fallback (fake claude, no API) =="
+# A fake `claude` on PATH records the --model it was given. It rejects
+# claude-sonnet-5-5 like an older CLI would, or fails with a rate limit when
+# FAKE_CLAUDE_MODE=ratelimit, and otherwise prints a summary.
+FB="$SCRATCH/fakebin"; mkdir -p "$FB"
+cat > "$FB/claude" <<'FAKE'
+#!/bin/bash
+m=""; while [ $# -gt 0 ]; do [ "$1" = "--model" ] && m="$2"; shift; done
+cat >/dev/null
+echo "$m" >> "$FAKE_CLAUDE_CALLS"
+if [ "${FAKE_CLAUDE_MODE:-}" = ratelimit ]; then echo "API Error: 429 rate limit exceeded" >&2; exit 1; fi
+if [ "$m" = claude-sonnet-5-5 ] && [ "${FAKE_CLAUDE_MODE:-}" = old ]; then echo "Error: model 'claude-sonnet-5-5' not found" >&2; exit 1; fi
+echo "SUMMARY via $m"
+FAKE
+chmod +x "$FB/claude"
+mk_stale() { # <project> : seven backups dated 2026-08-01, well past the 14-day cutoff
+    rm -rf "$1"; mkdir -p "$1/.claude/backups"
+    for i in 1 2 3 4 5 6 7; do printf '# backup %s\nsession: s-%s\n' "$i" "$i" > "$1/.claude/backups/${i}-backup-2026-08-01-120${i}.md"; done; }
+run_compactor() { # <project> [extra env...]
+    env PATH="$FB:$PATH" FAKE_CLAUDE_CALLS="$SCRATCH/calls" STATUSLINE_PROJECT_DIR="$1" "${@:2}" \
+        node "$NODE/backup-compactor.mjs" >/dev/null 2>&1; }
+CP="$SCRATCH/compact-proj"
+
+mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP"
+[ "$(cat "$SCRATCH/calls")" = "claude-sonnet-5-5" ] && ok "default summariser model is claude-sonnet-5-5" || fail "default model" "$(cat "$SCRATCH/calls")"
+grep -q 'SUMMARY via claude-sonnet-5-5' "$CP/.claude/backups/archived/summary-1-to-7.md" 2>/dev/null && ok "summary written by Sonnet 5.5" || fail "summary 5.5"
+
+mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP" FAKE_CLAUDE_MODE=old
+[ "$(tr '\n' ' ' < "$SCRATCH/calls")" = "claude-sonnet-5-5 claude-sonnet-5 " ] && ok "CLI that rejects 5.5 → one retry on claude-sonnet-5" || fail "fallback" "$(cat "$SCRATCH/calls")"
+grep -q 'SUMMARY via claude-sonnet-5$' "$CP/.claude/backups/archived/summary-1-to-7.md" 2>/dev/null && ok "fallback summary archived" || fail "fallback summary"
+
+mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP" FAKE_CLAUDE_MODE=ratelimit
+[ "$(wc -l < "$SCRATCH/calls")" -eq 1 ] && ok "rate-limit failure is not retried on another model" || fail "ratelimit retry" "$(cat "$SCRATCH/calls")"
+[ -f "$CP/.claude/backups/1-backup-2026-08-01-1201.md" ] && ok "failed batch keeps its original backups" || fail "originals kept"
+
+mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP" FAKE_CLAUDE_MODE=old STATUSLINE_SUMMARY_MODEL=claude-sonnet-5-5
+[ "$(cat "$SCRATCH/calls")" = "claude-sonnet-5-5" ] && ok "explicit STATUSLINE_SUMMARY_MODEL is never swapped" || fail "explicit model swapped" "$(cat "$SCRATCH/calls")"
 
 echo "== isolation =="
 # The renderer spawns background backup triggers; give them a moment, then make
