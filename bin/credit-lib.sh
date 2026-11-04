@@ -1,11 +1,12 @@
 #!/bin/bash
 # credit-lib.sh — shared pricing logic for the statusline and the credit report.
 #
-# Pricing (per 1M tokens; verified 2026-10-04 from
+# Pricing (per 1M tokens; verified 2026-11-04 from
 # https://platform.claude.com/docs/en/about-claude/pricing).
 # Cache multipliers vs base input: 5-minute write 1.25x, 1-hour write 2x,
 # read 0.1x — except Fable/Mythos 5.1 where a read is 0.025x ($0.25) and
-# Opus 5.5 where it is 0.05x ($0.20).
+# Opus 5.5 / Sonnet 5.5 where it is 0.05x ($0.20 / $0.10).
+# US-only inference (usage.inference_geo == "us") is 1.1x on 4.6+ models.
 #
 #   Fable / Mythos 5.1:  $10 in / $0.25 read / $12.50 5m / $20 1h / $50 out
 #   Fable / Mythos 5:    $10 in / $1.00 read / $12.50 5m / $20 1h / $50 out
@@ -16,11 +17,14 @@
 #     fast mode (usage.speed=="fast", Opus 5 / 4.8): $10 in / $50 out, cache
 #     multipliers stack on the fast input price ($1 read / $12.50 5m / $20 1h).
 #   Opus 4.0 / 4.1 / 3:  $15 in / $1.50 read / $18.75 5m / $30 1h / $75 out (retired)
-#   Sonnet 5.5 / 5:      $2  in / $0.20 read / $2.50  5m / $4  1h / $10 out
-#     (Sonnet 5.5, 2026-10: same price, standard multipliers, no fast mode)
+#   Sonnet 5.5:          $2  in / $0.10 read / $2.50  5m / $4  1h / $10 out (read 0.05x)
+#   Sonnet 5:            $2  in / $0.20 read / $2.50  5m / $4  1h / $10 out
 #     (the launch "introductory" $2/$10 became the permanent price; the
 #     scheduled 2026-09-01 rise to $3/$15 was cancelled)
 #   Sonnet 4.x / 3.x:    $3  in / $0.30 read / $3.75  5m / $6  1h / $15 out
+#   Haiku 5.5, prompt ≤ 100k tokens: $0.10 in / $0.01 read / $0.125 5m / $0.20 1h / $0.50 out
+#   Haiku 5.5, prompt > 100k tokens: $0.50 in / $0.05 read / $0.625 5m / $1    1h / $2.50 out
+#     "prompt" = input + cache read + cache write of that one request.
 #   Haiku 4.5:           $1  in / $0.10 read / $1.25  5m / $2  1h / $5  out
 #   Haiku 3.x:           $0.80 in / $0.08 read / $1 5m / $1.60 1h / $4 out (retired)
 #   Unknown families:    Opus 5 rates (labelled with the real family name)
@@ -123,7 +127,8 @@ _jsonl_to_tsv() {
                 (.value.usage.cache_creation.ephemeral_5m_input_tokens // 0 | tostring),
                 (.value.model // ""),
                 (.value.usage.speed // ""),
-                (.value.day // "")
+                (.value.day // ""),
+                (.value.usage.inference_geo // "" | if type=="string" then . else "" end)
               ]
             | @tsv' 2>/dev/null
 }
@@ -161,14 +166,23 @@ _AWK_RATE_FN='
     # Apply the standard cache multipliers to a base input price.
     function std_cache(base) { rr = base * 0.10; rc = base * 1.25; rc1h = base * 2.0 }
 
-    function set_rates(family, major, minor, speed,    ver) {
+    # prompt = the whole input of this request (fresh + cache read + cache write);
+    # only Haiku 5.5 prices by it. geo = usage.inference_geo ("us" costs 1.1x
+    # on 4.6+ models). Both may be omitted (awk passes "" / 0).
+    function set_rates(family, major, minor, speed, prompt, geo,    ver) {
         ver = major + minor / 10.0
         if (family == "haiku") {
-            if (major >= 4) { ri = 1.00; ro = 5.00 } else { ri = 0.80; ro = 4.00 }
+            if (ver >= 5.5) {
+                # Two tiers by prompt length, per request, cache tokens included.
+                if (prompt + 0 > 100000) { ri = 0.50; ro = 2.50 } else { ri = 0.10; ro = 0.50 }
+            }
+            else if (major >= 4) { ri = 1.00; ro = 5.00 }
+            else                 { ri = 0.80; ro = 4.00 }
             std_cache(ri)
         } else if (family == "sonnet") {
             if (major >= 5) { ri = 2.00; ro = 10.00 } else { ri = 3.00; ro = 15.00 }
             std_cache(ri)
+            if (ver >= 5.5) rr = ri * 0.05       # $0.10 cache read on 5.5
         } else if (family == "opus") {
             if (ver >= 5.5) {
                 # Opus 5.5 is CHEAPER than Opus 5, with a deeper cache-read
@@ -191,6 +205,10 @@ _AWK_RATE_FN='
             # Unknown/future family: Opus 5 rates. The bucket keeps the real name.
             ri = 5.00; ro = 25.00
             std_cache(ri)
+        }
+        # US-only inference: 1.1x on every category, Claude 4.6 and later.
+        if (geo == "us" && (ver >= 4.6 || family == "unknown")) {
+            ri *= 1.1; rr *= 1.1; rc *= 1.1; rc1h *= 1.1; ro *= 1.1
         }
     }
 
@@ -222,7 +240,7 @@ compute_credit_for_jsonl() {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
               cc1h = $5+0; cc5m = $6+0
               parse_model($7)
-              set_rates(FAMILY, MAJOR, MINOR, $8)
+              set_rates(FAMILY, MAJOR, MINOR, $8, ti+cr+cc, $10)
               in_cost  += (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
               out_cost += (to*ro)                                           / 1000000
             }
@@ -251,7 +269,7 @@ emit_credit_rows_dated_for_jsonl() {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
               cc1h = $5+0; cc5m = $6+0
               parse_model($7)
-              set_rates(FAMILY, MAJOR, MINOR, $8)
+              set_rates(FAMILY, MAJOR, MINOR, $8, ti+cr+cc, $10)
               in_c  = (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
               out_c = (to*ro)                                           / 1000000
               if (in_c + out_c == 0) next
@@ -273,7 +291,7 @@ emit_credit_rows_for_jsonl() {
               ti = $1+0; cr = $2+0; cc = $3+0; to = $4+0
               cc1h = $5+0; cc5m = $6+0
               parse_model($7)
-              set_rates(FAMILY, MAJOR, MINOR, $8)
+              set_rates(FAMILY, MAJOR, MINOR, $8, ti+cr+cc, $10)
               in_c  = (ti*ri + cr*rr + cache_create_cost(cc,cc1h,cc5m)) / 1000000
               out_c = (to*ro)                                           / 1000000
               if (in_c + out_c == 0) next

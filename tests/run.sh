@@ -47,23 +47,37 @@ done
 echo "== pricing =="
 # shellcheck source=../bin/credit-lib.sh
 source "$BIN/credit-lib.sh"
-price() { printf '%s\t%s\n' "$1" "${2:-standard}" | awk -F'\t' "$_AWK_RATE_FN"'{ parse_model($1); set_rates(FAMILY,MAJOR,MINOR,$2); printf "%s %.2f %.3f %.2f %.2f %.2f", bucket_label($2), ri, rr, rc, rc1h, ro }'; }
-t=$(price claude-fable-5-1);            assert_contains "fable 5.1 read \$0.25"   "$t" "fable-5.1 10.00 0.250 12.50 20.00 50.00"
-t=$(price claude-fable-5);              assert_contains "fable 5 read \$1.00"     "$t" "fable-5.0 10.00 1.000 12.50 20.00 50.00"
-t=$(price claude-mythos-5-1);           assert_contains "mythos 5.1 = fable"      "$t" "mythos-5.1 10.00 0.250"
-t=$(price claude-opus-5);               assert_contains "opus 5"                  "$t" "opus-5.0 5.00 0.500 6.25 10.00 25.00"
-t=$(price claude-opus-5-5);             assert_contains "opus 5.5 \$4/\$20, 0.05x read" "$t" "opus-5.5 4.00 0.200 5.00 8.00 20.00"
-t=$(price claude-opus-5-5 fast);        assert_contains "opus 5.5 fast \$8/\$40"  "$t" "opus-5.5+fast 8.00 0.400 10.00 16.00 40.00"
-t=$(price claude-opus-5 fast);          assert_contains "opus 5 fast still \$10/\$50" "$t" "opus-5.0+fast 10.00 1.000 12.50 20.00 50.00"
-t=$(price claude-opus-4-8 fast);        assert_contains "opus 4.8 fast \$10/\$50" "$t" "opus-4.8+fast 10.00 1.000 12.50 20.00 50.00"
-t=$(price claude-opus-4-1-20250805);    assert_contains "opus 4.1 legacy \$15"    "$t" "opus-4.1 15.00 1.500 18.75 30.00 75.00"
-t=$(price claude-sonnet-5);             assert_contains "sonnet 5 \$2/\$10"       "$t" "sonnet-5.0 2.00 0.200 2.50 4.00 10.00"
-t=$(price claude-sonnet-5-5);           assert_contains "sonnet 5.5 = sonnet 5 rates" "$t" "sonnet-5.5 2.00 0.200 2.50 4.00 10.00"
-t=$(price claude-sonnet-4-6);           assert_contains "sonnet 4.6 \$3/\$15"     "$t" "sonnet-4.6 3.00 0.300 3.75 6.00 15.00"
-t=$(price claude-3-5-sonnet-20241022);  assert_contains "legacy 3-5-sonnet order" "$t" "sonnet-3.5 3.00"
-t=$(price claude-haiku-4-5-20251001);   assert_contains "haiku 4.5"               "$t" "haiku-4.5 1.00 0.100 1.25 2.00 5.00"
-t=$(price claude-zephyr-6);             assert_contains "unknown family → opus"   "$t" "zephyr-6.0 5.00 0.500"
-t=$(price "");                          assert_contains "empty model → unknown"   "$t" "unknown 5.00"
+price() { # <model> [speed] [prompt_tokens] [geo]
+    printf '%s\t%s\t%s\t%s\n' "$1" "${2:-standard}" "${3:-0}" "${4:-}" | awk -F'\t' "$_AWK_RATE_FN"'{ parse_model($1); set_rates(FAMILY,MAJOR,MINOR,$2,$3,$4); printf "%s %.3f %.3f %.3f %.3f %.3f", bucket_label($2), ri, rr, rc, rc1h, ro }'; }
+t=$(price claude-fable-5-1);            assert_contains "fable 5.1 read \$0.25"   "$t" "fable-5.1 10.000 0.250 12.500 20.000 50.000"
+t=$(price claude-fable-5);              assert_contains "fable 5 read \$1.00"     "$t" "fable-5.0 10.000 1.000 12.500 20.000 50.000"
+t=$(price claude-mythos-5-1);           assert_contains "mythos 5.1 = fable"      "$t" "mythos-5.1 10.000 0.250"
+t=$(price claude-opus-5);               assert_contains "opus 5"                  "$t" "opus-5.0 5.000 0.500 6.250 10.000 25.000"
+t=$(price claude-opus-5-5);             assert_contains "opus 5.5 \$4/\$20, 0.05x read" "$t" "opus-5.5 4.000 0.200 5.000 8.000 20.000"
+t=$(price claude-opus-5-5 fast);        assert_contains "opus 5.5 fast \$8/\$40"  "$t" "opus-5.5+fast 8.000 0.400 10.000 16.000 40.000"
+t=$(price claude-opus-5 fast);          assert_contains "opus 5 fast still \$10/\$50" "$t" "opus-5.0+fast 10.000 1.000 12.500 20.000 50.000"
+t=$(price claude-opus-4-8 fast);        assert_contains "opus 4.8 fast \$10/\$50" "$t" "opus-4.8+fast 10.000 1.000 12.500 20.000 50.000"
+t=$(price claude-opus-4-1-20250805);    assert_contains "opus 4.1 legacy \$15"    "$t" "opus-4.1 15.000 1.500 18.750 30.000 75.000"
+t=$(price claude-sonnet-5);             assert_contains "sonnet 5 \$2/\$10"       "$t" "sonnet-5.0 2.000 0.200 2.500 4.000 10.000"
+t=$(price claude-sonnet-5-5);           assert_contains "sonnet 5.5 read 0.05x = \$0.10" "$t" "sonnet-5.5 2.000 0.100 2.500 4.000 10.000"
+t=$(price claude-sonnet-4-6);           assert_contains "sonnet 4.6 \$3/\$15"     "$t" "sonnet-4.6 3.000 0.300 3.750 6.000 15.000"
+t=$(price claude-3-5-sonnet-20241022);  assert_contains "legacy 3-5-sonnet order" "$t" "sonnet-3.5 3.000"
+t=$(price claude-haiku-4-5-20251001);   assert_contains "haiku 4.5"               "$t" "haiku-4.5 1.000 0.100 1.250 2.000 5.000"
+t=$(price claude-haiku-5-5 standard 100000); assert_contains "haiku 5.5 at exactly 100k = low tier" "$t" "haiku-5.5 0.100 0.010 0.125 0.200 0.500"
+t=$(price claude-haiku-5-5 standard 100001); assert_contains "haiku 5.5 over 100k = high tier"      "$t" "haiku-5.5 0.500 0.050 0.625 1.000 2.500"
+t=$(price claude-opus-5-5 standard 0 us);    assert_contains "inference_geo us = 1.1x"              "$t" "opus-5.5 4.400 0.220 5.500 8.800 22.000"
+t=$(price claude-opus-5-5 standard 0 global); assert_contains "inference_geo global = list price"   "$t" "opus-5.5 4.000 0.200"
+t=$(price claude-haiku-4-5 standard 0 us);   assert_contains "geo multiplier skips pre-4.6 models"  "$t" "haiku-4.5 1.000 0.100"
+t=$(price claude-zephyr-6);             assert_contains "unknown family → opus"   "$t" "zephyr-6.0 5.000 0.500"
+t=$(price "");                          assert_contains "empty model → unknown"   "$t" "unknown 5.000"
+# Haiku 5.5's tier is decided per request from that request's FULL prompt,
+# cache reads included: 20k fresh + 90k cache read = 110k → high tier.
+HJ="$SCRATCH/haiku55.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"id":"h1","model":"claude-haiku-5-5","usage":{"input_tokens":20000,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0,"output_tokens":1000}}}' \
+               '{"type":"assistant","message":{"id":"h2","model":"claude-haiku-5-5","usage":{"input_tokens":20000,"cache_read_input_tokens":70000,"cache_creation_input_tokens":0,"output_tokens":1000}}}' > "$HJ"
+# h1 (110k): 20000*0.50 + 90000*0.05 = 14500 → in 0.0145, out 1000*2.50 → 0.0025
+# h2 ( 90k): 20000*0.10 + 70000*0.01 =  2700 → in 0.0027, out 1000*0.50 → 0.0005
+t=$(compute_credit_for_jsonl "$HJ"); assert_contains "haiku 5.5 tier per request, cache reads count toward the threshold" "$t" "0.0172	0.0030	0.0202"
 
 # JSONL estimate: 1 message, fable-5.1, 1h cache split, known arithmetic.
 J="$SCRATCH/est.jsonl"
