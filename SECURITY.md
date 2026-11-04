@@ -35,10 +35,14 @@ thing each.
   never waits on it. Disable with `STATUSLINE_USAGE_API=0`; the feature is also
   inert without `curl` or without a credentials file.
 - The **backup compactor** (`node/backup-compactor.mjs`) invokes the `claude` CLI
-  (`claude -p --bare --no-session-persistence`) to summarize backups older than
+  (`claude -p --bare --no-session-persistence`, or for claude.ai-login users
+  `claude -p --settings '{"disableAllHooks":true}' --no-session-persistence`)
+  to summarize backups older than
   14 days. This sends summaries of your own backup files to the Anthropic API.
   Together with the usage fetch above, these are the only egress surfaces. `--bare` skips hooks and plugins inside the
-  summariser so no third-party hook sees the backup text; the
+  summariser so no third-party hook sees the backup text. `--bare` reads only
+  API-key credentials since Claude Code ~2.1.288, so login users get the
+  `disableAllHooks` form instead, which gives the same guarantee; the
   `STATUSLINE_SPAWNED_BY` guard additionally stops our own hooks from recursing.
   Disable it by deleting `node/backup-compactor.mjs` or removing the
   `maybeSpawnCompactor()` call in `node/backup-core.mjs`.

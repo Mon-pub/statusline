@@ -170,10 +170,13 @@ function buildPrompt(batch, contents) {
   return prompt;
 }
 
-// `--bare` skips hooks/plugins/LSP (so our own PreCompact/SessionEnd hooks can
-// never fire inside the summariser) and `--no-session-persistence` keeps the
-// summariser from leaving a transcript of its own in the project. Older CLIs
-// without `--bare` get one retry without it.
+// `--bare` skips hooks/plugins/LSP (so no hook, ours or a third party's, ever
+// sees backup text) and `--no-session-persistence` keeps the summariser from
+// leaving a transcript of its own in the project.
+// Since ~CC 2.1.288 `--bare` reads only API-key credentials, never the claude.ai
+// login, so subscription users get "Not logged in" (on STDOUT, exit 1). Those —
+// and CLIs too old to know `--bare` — retry with the normal login and hooks
+// switched off through `--settings`, which keeps the same no-hooks guarantee.
 function runClaude(prompt, extraFlags, model = SUMMARY_MODEL) {
   return spawnSync("claude", ["-p", "--model", model, "--no-session-persistence", ...extraFlags], {
     input: prompt,
@@ -188,23 +191,26 @@ function runClaude(prompt, extraFlags, model = SUMMARY_MODEL) {
 function summarizeWithClaude(prompt) {
   log(`Calling claude -p --model ${SUMMARY_MODEL} (${prompt.length} chars)`);
 
+  const said = r => `${r.stderr || ""}\n${r.stdout || ""}`;
   let flags = ["--bare"];
   let res = runClaude(prompt, flags);
-  if (!res.error && res.status !== 0 && /unknown option.*--bare/i.test(res.stderr || "")) {
-    log("CLI lacks --bare, retrying without it");
-    flags = [];
+  if (!res.error && res.status !== 0
+      && /unknown option.*--bare|not logged in|please run \/login/i.test(said(res))) {
+    log("--bare unusable here (no API key, or old CLI); retrying with the login and hooks disabled");
+    flags = ["--settings", JSON.stringify({ disableAllHooks: true })];
     res = runClaude(prompt, flags);
   }
   // Only a model-not-found style failure triggers the fallback: retrying on any
   // error would double the cost of a genuine failure (auth, rate limit, network).
   if (FALLBACK_MODEL && !res.error && res.status !== 0
-      && /model|not[_ ]found|invalid/i.test(res.stderr || "") && !/rate.?limit|auth|login/i.test(res.stderr || "")) {
+      && /model|not[_ ]found|invalid/i.test(said(res)) && !/rate.?limit|auth|log ?in/i.test(said(res))) {
     log(`${SUMMARY_MODEL} rejected, retrying with ${FALLBACK_MODEL}`);
     res = runClaude(prompt, flags, FALLBACK_MODEL);
   }
 
   if (res.error) { log(`CLI error: ${res.error.message}`); return null; }
-  if (res.status !== 0) { log(`CLI exit ${res.status}: ${(res.stderr || "").slice(0, 200)}`); return null; }
+  // The CLI prints some failures on stdout, so log whichever stream has text.
+  if (res.status !== 0) { log(`CLI exit ${res.status}: ${(res.stderr || res.stdout || "").trim().slice(0, 200)}`); return null; }
   return (res.stdout || "").trim() || null;
 }
 

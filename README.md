@@ -19,10 +19,11 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 - **ANSI-colored multi-line output** — up to 5 lines (model; context bar + cache + rate-limit bars; context-fill breakdown; resets/cost; and an optional backup path), colored with RGB escape sequences. The fill and backup lines each appear only when their data exists.
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. On modern Claude Code the badge is hidden when the model does not support effort; only older Claude Code (before 2.1.160, which never emitted the key) falls back to `settings.json`.
 - **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean. When running as a named subagent (`subagentStatusLine`), an `agent:<name>` prefix shows.
-- **Git tail** — `git: main #42 wt:feature` on line 1: current branch (short SHA when detached), the open PR/MR number from `pr.number`, and the worktree name from `worktree.name` / `workspace.git_worktree`. One cheap `git symbolic-ref` call, never a working-tree scan; hidden outside a repo.
+- **Git tail** — `git: main #42 wt:feature` on line 1: current branch (short SHA when detached), the open PR number from `pr.number` (`!42` for a GitLab merge request; green when approved, red when changes are requested, dim for a draft), and the worktree name from `worktree.name` / `workspace.git_worktree`. One cheap `git symbolic-ref` call, never a working-tree scan; hidden outside a repo.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly (input-only, per the docs).
 - **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing _what_ is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse **streams** the transcript in the background (node, constant memory even on 100 MB+ transcripts) and the statusline only reads a small cache. Hidden until data exists.
 - **Cache share** — `cache 92%` on the context line: the share of the current request's input served from the prompt cache (`cache_read / total input`). Hidden until there's input (e.g. right after `/compact`).
+- **Cache misses** — `2 misses (tools changed)` on the context line: requests that re-processed content the cache already held, with Claude Code's own diagnosis of the last one. Once the cache has gone cold the line also says how much the next turn will re-write, e.g. `cold (re-cache 412k)`: that is the cost of having waited.
 - **Prompt-cache TTL countdown** — `1h warm 59m` (Claude Code 2.1.251+): the cache TTL and how long until the cached prefix goes cold and the next turn re-pays the full write price. Green above 10 minutes, yellow at 10, red at 3; `cold` in red once it has lapsed. With `refreshInterval` set (the installer does this) the countdown ticks while you are idle — a visible nudge to send the next turn before the cache expires.
 - **Free tokens until compact** — subtracts the 33k autocompact buffer (1M windows compact at ~967k) to show real usable space.
 - **Rate-limit bars** — 5-hour and 7-day windows, plus the **spend-limit** bar for Claude apps gateway users (2.1.251+), driven by Claude Code's own `rate_limits.*.used_percentage`. Those stdin figures only move when the model answers in the current session, so the same 5-minute poll that feeds the per-model bar (below) is merged in: it also sees quota burnt in other sessions or on other machines, and a window that reset while you were idle. Merge rule per window: same reset time, the higher figure wins (usage inside a window only rises); different reset times, the newer window wins. A stale poll can therefore never lower a number. Without the poll (no `curl`, no credentials, or `STATUSLINE_USAGE_API=0`) the bars behave exactly as before. 5h/7d percentages are clamped to 0–100 so a transient bogus value is ignored rather than rendered; the spend figure is allowed past 100 (the bar clamps, the number turns red). On Claude Code 2.1.284+ with a USD gateway the spend bar also shows the money: `spend: ●●●●●○○○○○ 54% $271.40 of $500/mo`.
@@ -40,7 +41,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 - **Auto backup on thresholds** — first backup at 50k tokens, then every 10k. Percentage thresholds at 30%, 15%, 5% free as a safety net. The bash side only spawns node when the count moved 5k+; node applies the policy and writes only when a threshold is crossed. After a compaction the thresholds re-arm automatically.
 - **PreCompact hook** — captures context before Claude Code compacts, so you never lose work.
 - **SessionEnd hook** — refreshes the backup one last time when a session that already has one ends (sessions that never reached a threshold do not get a file).
-- **Backup compaction** — old backups (>14 days) are summarized by the Claude CLI (`claude -p --bare --no-session-persistence`, Sonnet 5.5 by default, falling back once to Sonnet 5 on a CLI too old to know it; override with `STATUSLINE_SUMMARY_MODEL`) into archived summaries, preserving session IDs for `--resume`.
+- **Backup compaction** — old backups (>14 days) are summarized by the Claude CLI (`claude -p --bare --no-session-persistence`; for claude.ai-login users, whose login `--bare` no longer reads, the same call without `--bare` and with all hooks disabled through `--settings`; Sonnet 5.5 by default, falling back once to Sonnet 5 on a CLI too old to know it; override with `STATUSLINE_SUMMARY_MODEL`) into archived summaries, preserving session IDs for `--resume`.
 - **Backup path display** — the last line shows the current backup file path when one exists.
 - **Cache housekeeping** — per-session cache files under `~/.cache/claude-statusline` older than 30 days are purged once a day, in the background.
 
@@ -215,9 +216,9 @@ bash ~/.claude/credit-summary.sh 2026-05-01 ~/proj # → …--since 2026-05-01 ~
 Flags are forwarded, so `credit-summary.sh 2026-05-01 --json` works. Prefer
 `credit-report.sh` directly in anything new.
 
-## Pricing (as of 2026-10-04)
+## Pricing (as of 2026-11-04)
 
-Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25), and **Opus 5.5**, where it is 0.05× ($0.20).
+Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25), and **Opus 5.5 / Sonnet 5.5**, where it is 0.05× ($0.20 / $0.10). Haiku 5.5 has two price tiers chosen per request by prompt size (fresh input + cache reads + cache writes). US-only inference (`inference_geo: "us"`) adds 1.1× on 4.6+ models.
 
 | Model                 | Input  | Cache read | Cache write | Output |
 | --------------------- | ------ | ---------- | ----------- | ------ |
@@ -228,8 +229,11 @@ Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.clau
 | Opus 5, 4.5–4.8       | $5.00  | $0.50      | $6.25       | $25.00 |
 | Opus 5 / 4.8 fast     | $10.00 | $1.00      | $12.50      | $50.00 |
 | Opus 4.0 / 4.1 / 3    | $15.00 | $1.50      | $18.75      | $75.00 |
-| Sonnet 5.5 / 5        | $2.00  | $0.20      | $2.50       | $10.00 |
+| Sonnet 5.5            | $2.00  | $0.10      | $2.50       | $10.00 |
+| Sonnet 5              | $2.00  | $0.20      | $2.50       | $10.00 |
 | Sonnet 4.x / 3.x      | $3.00  | $0.30      | $3.75       | $15.00 |
+| Haiku 5.5, prompt ≤100k | $0.10 | $0.01     | $0.125      | $0.50  |
+| Haiku 5.5, prompt >100k | $0.50 | $0.05     | $0.625      | $2.50  |
 | Haiku 4.5             | $1.00  | $0.10      | $1.25       | $5.00  |
 | Haiku 3.x             | $0.80  | $0.08      | $1.00       | $4.00  |
 

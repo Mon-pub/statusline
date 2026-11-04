@@ -130,12 +130,30 @@ out=$(render "$SP"); assert_contains "fractional limit keeps cents, unknown peri
 assert_not_contains "…and no stray period text" "$out" "12.50/"
 jq '.rate_limits.spend_limit += {used_usd:"$(id)", limit_usd:-5, period:"monthly\u001b[31m"}' "$C" > "$SP"
 out=$(render "$SP"); assert_not_contains "hostile dollar fields are dropped" "$out" " of \$"
-assert_contains "cold cache (no separator without a share)" "$out" "○ cold |"
+assert_contains "cold cache (no separator without a share)" "$out" "○ cold (re-cache 88.6k) |"
 assert_not_contains "no cache share after /compact"     "$out" "cache 9"
 assert_contains "fast badge"                            "$out" " fast "
 assert_contains "no-think badge"                        "$out" "no-think"
 assert_contains "agent name prefix"                     "$out" "agent:reviewer"
 assert_contains "PR number + worktree"                  "$out" "#42 wt:feat-x"
+# prompt_cache miss stats + re-cache size, PR review state / GitLab MR
+PC="$SCRATCH/pc-stats.json"
+jq '.prompt_cache += {misses:3, last_miss_cause:{causes:["tools_changed","system_prompt_changed","x"],tools_added:2}, recache_tokens_if_cold:412000} | .pr.review_state="approved"' "$C" > "$PC"
+out=$(render "$PC")
+assert_contains "cold cache shows what the next turn re-caches" "$out" "cold (re-cache 412k)"
+assert_contains "miss count + first two diagnosed causes"      "$out" "3 misses (tools changed, system prompt changed)"
+assert_not_contains "third cause is not shown"                 "$out" "changed, x"
+out_raw=$(bash "$BIN/statusline-command.sh" < "$PC" 2>/dev/null)
+printf '%s' "$out_raw" | grep -q $'\x1b\[38;2;0;160;0m#42' && ok "approved PR number is green" || fail "approved colour"
+jq '.prompt_cache += {misses:1, last_miss_cause:null} | .pr += {review_state:"draft", kind:"mr"}' "$C" > "$PC"
+out=$(render "$PC")
+assert_contains "single miss, no cause"               "$out" "1 miss |"
+assert_contains "GitLab merge request uses !"         "$out" "!42 wt:feat-x"
+jq '.prompt_cache += {misses:"$(id)", last_miss_cause:{causes:["a\u001b[31mb"]}, recache_tokens_if_cold:-5} | .pr.review_state="x;rm"' "$C" > "$PC"
+out=$(render "$PC")
+assert_not_contains "hostile miss count dropped"      "$out" "miss"
+assert_not_contains "negative re-cache dropped"       "$out" "re-cache"
+assert_contains "unknown review state → default PR badge" "$out" "#42 wt:feat-x"
 
 echo "== renderer: ttl near expiry shows without separator when no share =="
 E="$SCRATCH/ttl.json"
@@ -437,12 +455,38 @@ out=$(render "$M"); assert_contains "stale data is tagged, not hidden" "$out" "3
 jq -c --argjson n "$now" '.attempted_at=$n | .fetched_at=($n-90000)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
 out=$(render "$M"); assert_not_contains "data older than a day is dropped" "$out" "7d Fable"
 # failed fetch keeps the last good payload and only bumps attempted_at
-jq -c --argjson n "$now" '.attempted_at=($n-1000) | .fetched_at=($n-100)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+jq -c --argjson n "$now" '.attempted_at=($n-1000) | .next_at=($n-700) | .fetched_at=($n-100)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
 rm -f "$UC/usage.spawn"
 STATUSLINE_USAGE_URL="file://$SCRATCH/does-not-exist.json" render "$M" >/dev/null
 for _ in 1 2 3 4 5 6; do jq -e --argjson n "$now" '.attempted_at >= $n' "$UC/usage.json" >/dev/null 2>&1 && break; sleep 0.5; done
 jq -e --argjson n "$now" '.attempted_at >= $n and (.scoped|map(.name)|index("Fable")) != null' "$UC/usage.json" >/dev/null \
     && ok "failed fetch keeps old data, records the attempt" || fail "failed fetch handling" "$(cat "$UC/usage.json")"
+# Regression (2026-11): the endpoint sends "five_hour": null when no 5-hour
+# window is active. That once made jq print nothing and an EMPTY file replace
+# the cache, wiping every polled bar.
+jq '.five_hour=null' "$UA" > "$SCRATCH/usage-null5h.json"
+jq -c --argjson n "$now" '.attempted_at=($n-1000) | .next_at=($n-700)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"
+rm -f "$UC/usage.spawn"
+STATUSLINE_USAGE_URL="file://$SCRATCH/usage-null5h.json" render "$M" >/dev/null
+for _ in 1 2 3 4 5 6; do jq -e --argjson n "$now" '.attempted_at >= $n' "$UC/usage.json" >/dev/null 2>&1 && break; sleep 0.5; done
+[ -s "$UC/usage.json" ] && ok "null 5-hour window does not empty the cache" || fail "cache emptied by five_hour:null"
+jq -e '.five_hour == null and .seven_day.pct == 40 and (.scoped|length) == 3' "$UC/usage.json" >/dev/null \
+    && ok "…5h stored as null, 7d and model buckets kept" || fail "null 5h payload" "$(cat "$UC/usage.json")"
+# Backoff: a failed fetch (here a 429 from a local fake server is simulated
+# by a missing file) doubles the wait each time, capped at an hour, and an
+# EMPTY cache file (left by the old bug) is treated as no cache, not as data.
+: > "$UC/usage.json"; rm -f "$UC/usage.spawn"
+STATUSLINE_USAGE_URL="file://$SCRATCH/does-not-exist.json" render "$M" >/dev/null
+for _ in 1 2 3 4 5 6; do [ -s "$UC/usage.json" ] && break; sleep 0.5; done
+jq -e --argjson n "$now" '.fails == 1 and .next_at >= ($n + 300) and .fetched_at == 0' "$UC/usage.json" >/dev/null \
+    && ok "failure on an empty cache writes a valid file with a 5-min backoff" || fail "empty-cache failure" "$(cat "$UC/usage.json")"
+jq -c --argjson n "$now" '.fails = 4 | .next_at = ($n - 1)' "$UC/usage.json" > "$UC/u.tmp" && mv "$UC/u.tmp" "$UC/usage.json"; rm -f "$UC/usage.spawn"
+STATUSLINE_USAGE_URL="file://$SCRATCH/does-not-exist.json" render "$M" >/dev/null
+for _ in 1 2 3 4 5 6; do jq -e '.fails == 5' "$UC/usage.json" >/dev/null 2>&1 && break; sleep 0.5; done
+jq -e --argjson n "$now" '.fails == 5 and .next_at >= ($n + 3600) and .next_at <= ($n + 3700)' "$UC/usage.json" >/dev/null \
+    && ok "repeated failures back off, capped at one hour" || fail "backoff cap" "$(cat "$UC/usage.json")"
+rm -f "$UC/usage.spawn"; render "$M" >/dev/null; sleep 1
+[ ! -f "$UC/usage.spawn" ] && ok "no fetch is attempted before next_at" || fail "fetched during backoff"
 # kill switch and expired token: no cache, no read
 rm -f "$UC/usage.json" "$UC/usage.spawn"
 out=$(STATUSLINE_USAGE_API=0 render "$M"); sleep 1
@@ -460,9 +504,19 @@ echo "== backup compactor: summariser model + fallback (fake claude, no API) =="
 FB="$SCRATCH/fakebin"; mkdir -p "$FB"
 cat > "$FB/claude" <<'FAKE'
 #!/bin/bash
-m=""; while [ $# -gt 0 ]; do [ "$1" = "--model" ] && m="$2"; shift; done
+m=""; bare=0; nohooks=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --model) m="$2" ;;
+        --bare) bare=1 ;;
+        --settings) case "$2" in *'"disableAllHooks":true'*) nohooks=1 ;; esac ;;
+    esac; shift
+done
 cat >/dev/null
+# Real CC (2.1.288+): --bare ignores the claude.ai login and says so on STDOUT.
+if [ "$bare" = 1 ] && [ "${FAKE_CLAUDE_AUTH:-login}" = login ]; then echo "Not logged in · Please run /login"; exit 1; fi
 echo "$m" >> "$FAKE_CLAUDE_CALLS"
+echo "bare=$bare nohooks=$nohooks" >> "$FAKE_CLAUDE_CALLS.flags"
 if [ "${FAKE_CLAUDE_MODE:-}" = ratelimit ]; then echo "API Error: 429 rate limit exceeded" >&2; exit 1; fi
 if [ "$m" = claude-sonnet-5-5 ] && [ "${FAKE_CLAUDE_MODE:-}" = old ]; then echo "Error: model 'claude-sonnet-5-5' not found" >&2; exit 1; fi
 echo "SUMMARY via $m"
@@ -476,8 +530,11 @@ run_compactor() { # <project> [extra env...]
         node "$NODE/backup-compactor.mjs" >/dev/null 2>&1; }
 CP="$SCRATCH/compact-proj"
 
-mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP"
+mk_stale "$CP"; : > "$SCRATCH/calls"; : > "$SCRATCH/calls.flags"; run_compactor "$CP"
 [ "$(cat "$SCRATCH/calls")" = "claude-sonnet-5-5" ] && ok "default summariser model is claude-sonnet-5-5" || fail "default model" "$(cat "$SCRATCH/calls")"
+[ "$(cat "$SCRATCH/calls.flags")" = "bare=0 nohooks=1" ] && ok "login user: --bare refused → retried with the login and hooks disabled" || fail "bare fallback" "$(cat "$SCRATCH/calls.flags")"
+mk_stale "$CP"; : > "$SCRATCH/calls"; : > "$SCRATCH/calls.flags"; run_compactor "$CP" FAKE_CLAUDE_AUTH=apikey
+[ "$(cat "$SCRATCH/calls.flags")" = "bare=1 nohooks=0" ] && ok "API-key user: --bare used directly, no retry" || fail "apikey bare" "$(cat "$SCRATCH/calls.flags")"
 grep -q 'SUMMARY via claude-sonnet-5-5' "$CP/.claude/backups/archived/summary-1-to-7.md" 2>/dev/null && ok "summary written by Sonnet 5.5" || fail "summary 5.5"
 
 mk_stale "$CP"; : > "$SCRATCH/calls"; run_compactor "$CP" FAKE_CLAUDE_MODE=old

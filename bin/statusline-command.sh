@@ -105,7 +105,14 @@ mapfile -t F < <(printf '%s' "$input" | jq -r '
          | if type=="number" and . >= 0 then . else "" end),             # 35 (CC 2.1.284+)
       (.rate_limits.spend_limit.limit_usd
          | if type=="number" and . > 0 then . else "" end),              # 36
-      (.rate_limits.spend_limit.period // "" | ident)                    # 37
+      (.rate_limits.spend_limit.period // "" | ident),                   # 37
+      (.prompt_cache.misses | intb),                                     # 38 (CC 2.1.251+)
+      ((.prompt_cache.last_miss_cause.causes // [])
+         | if type=="array" then (map(select(type=="string") | ident) | .[0:2] | join(","))
+           else "" end),                                                 # 39 (CC 2.1.260+)
+      (.prompt_cache.recache_tokens_if_cold | intb),                     # 40
+      (.pr.review_state // "" | ident),                                  # 41
+      (.pr.kind // "" | ident)                                           # 42
     ] | .[]' 2>/dev/null)
 
 model="${F[0]:-Unknown}";     model_id="${F[1]}";        effort="${F[2]}"
@@ -126,6 +133,8 @@ project_dir="${F[28]}";       current_dir="${F[29]}"
 pr_number="${F[30]}";         worktree_name="${F[31]}"
 agent_name="${F[32]}";        cc_version="${F[33]}";      has_effort_key="${F[34]:-0}"
 spend_used_usd="${F[35]}";    spend_limit_usd="${F[36]}"; spend_period="${F[37]}"
+pc_misses="${F[38]}";         pc_miss_cause="${F[39]}";   pc_recache="${F[40]}"
+pr_review="${F[41]}";         pr_kind="${F[42]}"
 
 # Defense in depth: even though jq coerced these, re-assert the integer shape
 # before any `$(( ))` so a jq failure (empty F array) can't leak a raw string.
@@ -211,7 +220,18 @@ if [ -n "$current_dir" ] && [ -d "$current_dir" ] && command -v git >/dev/null 2
     branch=$(printf '%s' "$branch" | tr -d '\000-\037\177')
     [ -n "$branch" ] && git_tail="${C_WHITE}${branch}${C_RESET}"
 fi
-[ -n "$pr_number" ]     && git_tail="${git_tail}${git_tail:+ }${C_CYAN}#${pr_number}${C_RESET}"
+# PR badge: "#42" for GitHub, "!42" for a GitLab merge request (pr.kind=="mr"),
+# coloured by review state — green approved, red changes requested, dim draft.
+if [ -n "$pr_number" ]; then
+    pr_sigil="#"; [ "$pr_kind" = "mr" ] && pr_sigil="!"
+    case "$pr_review" in
+        approved)          pr_color="$C_GREEN" ;;
+        changes_requested) pr_color="$C_RED" ;;
+        draft)             pr_color="$C_DIM" ;;
+        *)                 pr_color="$C_CYAN" ;;
+    esac
+    git_tail="${git_tail}${git_tail:+ }${pr_color}${pr_sigil}${pr_number}${C_RESET}"
+fi
 [ -n "$worktree_name" ] && git_tail="${git_tail}${git_tail:+ }${C_DIM}wt:${C_RESET}${C_WHITE}${worktree_name}${C_RESET}"
 [ -n "$git_tail" ] && line1="${line1}${C_SEP}${C_DIM}git:${C_RESET} ${git_tail}"
 
@@ -341,6 +361,22 @@ if [ "$pc_warm" = "true" ] && [[ "$pc_expires" =~ ^[0-9]+$ ]]; then
     fi
 elif [ "$pc_warm" = "false" ] && [ "$pc_observed" = "true" ]; then
     cache_state="${C_RED}cold${C_RESET}"
+fi
+# Gone cold: say how much the next turn will re-write to the cache — that
+# is the bill for waiting too long (CC reports it as recache_tokens_if_cold).
+if [ "$cache_state" = "${C_RED}cold${C_RESET}" ] && [[ "$pc_recache" =~ ^[0-9]+$ ]] && [ "$pc_recache" -gt 0 ]; then
+    cache_state="${cache_state} ${C_DIM}(re-cache $(format_tokens "$pc_recache"))${C_RESET}"
+fi
+# Misses: requests that re-processed content the cache already held, with
+# Claude Code's diagnosis of the last one ("tools changed", "ttl expired 5m").
+if [[ "$pc_misses" =~ ^[0-9]+$ ]] && [ "$pc_misses" -gt 0 ]; then
+    miss_seg="${C_YELLOW}${pc_misses} miss${C_RESET}"
+    [ "$pc_misses" -gt 1 ] && miss_seg="${C_YELLOW}${pc_misses} misses${C_RESET}"
+    if [ -n "$pc_miss_cause" ]; then
+        _cause=$(printf '%s' "$pc_miss_cause" | tr '_' ' ' | sed 's/,/, /g')
+        miss_seg="${miss_seg} ${C_DIM}(${_cause})${C_RESET}"
+    fi
+    if [ -n "$cache_state" ]; then cache_state="${cache_state} ${C_DIM}·${C_RESET} ${miss_seg}"; else cache_state="$miss_seg"; fi
 fi
 if [ -n "$cache_state" ]; then
     [ "$cache_shown" -eq 1 ] && ctx_line="${ctx_line} ${C_DIM}·${C_RESET}"
