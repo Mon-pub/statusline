@@ -1,13 +1,16 @@
 #!/bin/bash
 # credit-lib.sh — shared pricing logic for the statusline and the credit report.
 #
-# Pricing (per 1M tokens; verified 2026-11-04 from
+# Pricing (per 1M tokens; verified 2026-11-13 from
 # https://platform.claude.com/docs/en/about-claude/pricing).
 # Cache multipliers vs base input: 5-minute write 1.25x, 1-hour write 2x,
-# read 0.1x — except Fable/Mythos 5.1 where a read is 0.025x ($0.25) and
-# Opus 5.5 / Sonnet 5.5 where it is 0.05x ($0.20 / $0.10).
+# read 0.1x — except Fable/Mythos 5.1 and 5.2 where a read is 0.025x
+# ($0.25 / $0.20) and Opus 5.5 / Sonnet 5.5 where it is 0.05x ($0.20 / $0.10).
 # US-only inference (usage.inference_geo == "us") is 1.1x on 4.6+ models.
 #
+#   Fable / Mythos 5.2:  $8  in / $0.20 read / $10     5m / $16 1h / $40 out
+#     fast mode: $16 in / $80 out; cache multipliers stack on the fast input
+#     price ($0.40 read / $20 5m / $32 1h). Rates verified 2026-11-13.
 #   Fable / Mythos 5.1:  $10 in / $0.25 read / $12.50 5m / $20 1h / $50 out
 #   Fable / Mythos 5:    $10 in / $1.00 read / $12.50 5m / $20 1h / $50 out
 #   Opus 5.5:            $4  in / $0.20 read / $5     5m / $8  1h / $20 out
@@ -48,6 +51,7 @@
 #     claude-haiku-4-5-20251001  → haiku  4.5
 #     claude-3-5-sonnet-20241022 → sonnet 3.5
 #     claude-3-opus-20240229     → opus   3.0
+#     claude-fable-5-2           → fable  5.2  ($8/$40 — cheaper than 5.1)
 #     claude-fable-5-1           → fable  5.1
 #     claude-opus-5-5            → opus   5.5  ($4/$20, 0.05x read — cheaper than 5.0)
 #     claude-opus-5              → opus   5.0
@@ -198,9 +202,15 @@ _AWK_RATE_FN='
                 std_cache(ri)
             }
         } else if (family == "fable" || family == "mythos") {
-            ri = 10.00; ro = 50.00
+            if (ver >= 5.2) {
+                # Fable / Mythos 5.2 is CHEAPER than 5.1. Fast mode is 2x and
+                # the cache multipliers stack on the fast input price.
+                if (speed == "fast") { ri = 16.00; ro = 80.00 } else { ri = 8.00; ro = 40.00 }
+            } else {
+                ri = 10.00; ro = 50.00
+            }
             std_cache(ri)
-            if (ver >= 5.1) rr = ri * 0.025      # $0.25 cache read on 5.1
+            if (ver >= 5.1) rr = ri * 0.025      # read: $0.20 on 5.2 ($0.40 fast), $0.25 on 5.1
         } else {
             # Unknown/future family: Opus 5 rates. The bucket keeps the real name.
             ri = 5.00; ro = 25.00

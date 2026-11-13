@@ -3,7 +3,7 @@
 A rich multi-line statusline for [Claude Code](https://code.claude.com/docs/en/statusline) with ANSI colors, rate-limit bars with burn-rate projection, prompt-cache TTL countdown, context-fill breakdown, session cost tracking, and automatic context backup.
 
 ```
-Fable 5.1 (high) | 175k/1m (17% used) | 792k 79% free | git: main #42
+Fable 5.2 (high) | 175k/1m (17% used) | 792k 79% free | git: main #42
 ctx: ●●○○○○○○○○○○○○○○ cache 92% · 1h warm 59m | 5h: ●●●●●●○○○○ 64% ->cap 1h27m (Sat 03:02) | 7d: ●○○○○○○○○○ 13%
 fill: tool out 69% · tool cmd 17% · attached 13% · chat In+Out 1% | 7d Fable: ●○○○○○○○○○ 1%
 resets 4:00am (2h24m) | resets Mon, 8:00am (2d6h) | $5.65 | $33.52/h | 10m | +413/-289
@@ -18,7 +18,7 @@ Tracks Claude Code **2.1.261** (2026-09). Tested against the live stdin schema; 
 
 - **ANSI-colored multi-line output** — up to 5 lines (model; context bar + cache + rate-limit bars; context-fill breakdown; resets/cost; and an optional backup path), colored with RGB escape sequences. The fill and backup lines each appear only when their data exists.
 - **Model name + effort badge** — effort level (`low`/`med`/`high`/`xhigh`/`max`, or any new level shown raw) read from the live status JSON (`.effort.level`), so mid-session `/effort` changes update immediately. On modern Claude Code the badge is hidden when the model does not support effort; only older Claude Code (before 2.1.160, which never emitted the key) falls back to `settings.json`.
-- **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean. When running as a named subagent (`subagentStatusLine`), an `agent:<name>` prefix shows.
+- **Mode badges** — a `fast` badge when fast mode is on and a `no-think` badge when thinking is disabled. Both appear only in their non-default state, so the default layout stays clean. When the session runs as a named agent (`claude --agent <name>`, or the `agent` setting), an `agent:<name>` prefix shows.
 - **Git tail** — `git: main #42 wt:feature` on line 1: current branch (short SHA when detached), the open PR number from `pr.number` (`!42` for a GitLab merge request; green when approved, red when changes are requested, dim for a draft), and the worktree name from `worktree.name` / `workspace.git_worktree`. One cheap `git symbolic-ref` call, never a working-tree scan; hidden outside a repo.
 - **Context bar** — 16-char `●○` bar with color thresholds (green < 50%, orange 50-69%, yellow 70-89%, red 90%+). The `% used` figure prefers Claude Code's own `used_percentage` so it matches the built-in UI exactly (input-only, per the docs).
 - **Context fill breakdown** — a `fill: tool out 33% · attached 29% · chat In+Out 21% · tool cmd 16%` line showing _what_ is consuming the live window (tool output vs. attachments vs. chat messages vs. tool calls), so you can see what to trim. Only content after the latest `/compact` is counted. Tokens are approximated locally (chars/4, zero deps); the parse **streams** the transcript in the background (node, constant memory even on 100 MB+ transcripts) and the statusline only reads a small cache. Hidden until data exists.
@@ -216,12 +216,14 @@ bash ~/.claude/credit-summary.sh 2026-05-01 ~/proj # → …--since 2026-05-01 ~
 Flags are forwarded, so `credit-summary.sh 2026-05-01 --json` works. Prefer
 `credit-report.sh` directly in anything new.
 
-## Pricing (as of 2026-11-04)
+## Pricing (as of 2026-11-13)
 
-Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.1**, where a read is 0.025× ($0.25), and **Opus 5.5 / Sonnet 5.5**, where it is 0.05× ($0.20 / $0.10). Haiku 5.5 has two price tiers chosen per request by prompt size (fresh input + cache reads + cache writes). US-only inference (`inference_geo: "us"`) adds 1.1× on 4.6+ models.
+Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.claude.com/docs/en/about-claude/pricing). "Cache write" is the 5-minute tier (1.25× input); the 1-hour tier is 2× input. Cache reads are 0.1× input — except Fable/Mythos **5.2 and 5.1**, where a read is 0.025× ($0.20 / $0.25), and **Opus 5.5 / Sonnet 5.5**, where it is 0.05× ($0.20 / $0.10). Fast-mode rows: the cache multipliers apply on top of the fast input price. Haiku 5.5 has two price tiers chosen per request by prompt size (fresh input + cache reads + cache writes). US-only inference (`inference_geo: "us"`) adds 1.1× on 4.6+ models.
 
 | Model                 | Input  | Cache read | Cache write | Output |
 | --------------------- | ------ | ---------- | ----------- | ------ |
+| Fable / Mythos 5.2    | $8.00  | $0.20      | $10.00      | $40.00 |
+| Fable / Mythos 5.2 fast | $16.00 | $0.40    | $20.00      | $80.00 |
 | Fable / Mythos 5.1    | $10.00 | $0.25      | $12.50      | $50.00 |
 | Fable / Mythos 5      | $10.00 | $1.00      | $12.50      | $50.00 |
 | Opus 5.5              | $4.00  | $0.20      | $5.00       | $20.00 |
@@ -237,7 +239,7 @@ Per 1M tokens. Verified from [platform.claude.com pricing](https://platform.clau
 | Haiku 4.5             | $1.00  | $0.10      | $1.25       | $5.00  |
 | Haiku 3.x             | $0.80  | $0.08      | $1.00       | $4.00  |
 
-Rates are picked from the model id's family **and version** (`claude-fable-5-1` → fable 5.1, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. Sonnet 5.5 (2026-10, now Claude Code's default Sonnet) costs the same and uses standard cache multipliers; there is no Sonnet fast mode. The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Opus 5.5 is the first Opus that is *cheaper* than its predecessor, so it must not fall into the Opus 5 bracket — that would overstate its cost by 25% (60% on cache reads). Edit `set_rates()` in `bin/credit-lib.sh` to update pricing; the account report fingerprints that code in its cache key, so a rate change re-prices every cached session on the next run.
+Rates are picked from the model id's family **and version** (`claude-fable-5-2` → fable 5.2, `claude-3-5-sonnet-…` → sonnet 3.5); a response with `usage.speed == "fast"` is billed at fast-mode rates. Unknown families fall back to Opus 5 rates but keep their real name in the breakdown. Sonnet 5's launch price ($2/$10) became the permanent price; the planned 2026-09-01 increase was cancelled. Sonnet 5.5 (2026-10, now Claude Code's default Sonnet) costs the same and uses standard cache multipliers; there is no Sonnet fast mode. Fast mode exists on Fable/Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8 (Opus 4.8 fast ends 2026-11-30). The live headline always uses Claude Code's own `cost.total_cost_usd`; the table is for the offline estimate. Opus 5.5 and Fable 5.2 are each *cheaper* than their predecessor, so they must not fall into the older bracket — that would overstate Opus 5.5 by 25% (60% on cache reads) and Fable 5.2 by 25%. Edit `set_rates()` in `bin/credit-lib.sh` to update pricing; the account report fingerprints that code in its cache key, so a rate change re-prices every cached session on the next run.
 
 ## Architecture
 

@@ -52,6 +52,11 @@ price() { # <model> [speed] [prompt_tokens] [geo]
 t=$(price claude-fable-5-1);            assert_contains "fable 5.1 read \$0.25"   "$t" "fable-5.1 10.000 0.250 12.500 20.000 50.000"
 t=$(price claude-fable-5);              assert_contains "fable 5 read \$1.00"     "$t" "fable-5.0 10.000 1.000 12.500 20.000 50.000"
 t=$(price claude-mythos-5-1);           assert_contains "mythos 5.1 = fable"      "$t" "mythos-5.1 10.000 0.250"
+t=$(price claude-fable-5-2);            assert_contains "fable 5.2 \$8/\$40, read \$0.20" "$t" "fable-5.2 8.000 0.200 10.000 16.000 40.000"
+t=$(price claude-fable-5-2 fast);       assert_contains "fable 5.2 fast \$16/\$80" "$t" "fable-5.2+fast 16.000 0.400 20.000 32.000 80.000"
+t=$(price claude-mythos-5-2);           assert_contains "mythos 5.2 = fable 5.2"  "$t" "mythos-5.2 8.000 0.200 10.000 16.000 40.000"
+t=$(price claude-fable-5-2 standard 0 us); assert_contains "fable 5.2 US geo 1.1x" "$t" "fable-5.2 8.800 0.220 11.000 17.600 44.000"
+t=$(price claude-fable-5-1 fast);       assert_contains "fable 5.1 has no fast tier" "$t" "fable-5.1+fast 10.000 0.250 12.500 20.000 50.000"
 t=$(price claude-opus-5);               assert_contains "opus 5"                  "$t" "opus-5.0 5.000 0.500 6.250 10.000 25.000"
 t=$(price claude-opus-5-5);             assert_contains "opus 5.5 \$4/\$20, 0.05x read" "$t" "opus-5.5 4.000 0.200 5.000 8.000 20.000"
 t=$(price claude-opus-5-5 fast);        assert_contains "opus 5.5 fast \$8/\$40"  "$t" "opus-5.5+fast 8.000 0.400 10.000 16.000 40.000"
@@ -86,6 +91,15 @@ printf '%s\n' '{"type":"assistant","message":{"id":"m1","model":"claude-fable-5-
 # in = 1000*10 + 100000*0.25 + 20000*20 = 10000+25000+400000 = 435000 /1e6 = 0.4350 ; out = 2000*50/1e6 = 0.1000
 t=$(compute_credit_for_jsonl "$J"); assert_contains "estimate dedups by message id and prices tiers" "$t" "0.4350	0.1000	0.5350"
 t=$(emit_credit_rows_for_jsonl "$J"); assert_contains "per-model row bucket" "$t" "fable-5.1	0.4350	0.1000"
+# Same tokens on Fable 5.2, one standard and one fast message (distinct ids).
+J2="$SCRATCH/est52.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"id":"f1","model":"claude-fable-5-2","usage":{"input_tokens":1000,"cache_read_input_tokens":100000,"cache_creation_input_tokens":20000,"output_tokens":2000,"cache_creation":{"ephemeral_1h_input_tokens":20000,"ephemeral_5m_input_tokens":0}}}}' \
+               '{"type":"assistant","message":{"id":"f2","model":"claude-fable-5-2","usage":{"input_tokens":1000,"cache_read_input_tokens":100000,"cache_creation_input_tokens":20000,"output_tokens":2000,"speed":"fast","cache_creation":{"ephemeral_1h_input_tokens":20000,"ephemeral_5m_input_tokens":0}}}}' > "$J2"
+# standard: in = 1000*8 + 100000*0.20 + 20000*16 = 348000 -> 0.3480 ; out = 2000*40 -> 0.0800
+# fast:     in = 1000*16 + 100000*0.40 + 20000*32 = 696000 -> 0.6960 ; out = 2000*80 -> 0.1600
+t=$(emit_credit_rows_for_jsonl "$J2")
+assert_contains "fable 5.2 standard row"  "$t" "fable-5.2	0.3480	0.0800"
+assert_contains "fable 5.2 fast row"      "$t" "fable-5.2+fast	0.6960	0.1600"
 
 echo "== renderer: modern CC 2.1.261 fixture =="
 # project_dir points at a scratch dir that EXISTS: the backup bridge falls back
